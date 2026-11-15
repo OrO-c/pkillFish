@@ -71,10 +71,10 @@ python ml/scrape_aicu.py \
   --blacklist blacklist.json \
   --out ml/data \
   --include-before-as-negatives \
-  --max-pages 10
+  --negative-pages 2
 ```
 
-该选项会把 2026-10 之前的评论写入 `negatives.jsonl`，标记 `label: 0`，作为同一账号人类时期的 hard negative。它不是默认行为，因为默认采集范围严格限定为 2026-10 之后。
+该选项会把 2026-10 边界之后额外 2 页（默认）的旧评论写入 `negatives.jsonl`，标记 `label: 0`，作为同一账号人类时期的 hard negative。它不是默认行为，因为默认采集范围严格限定为 2026-10 之后；`--negative-pages 0` 表示不额外采集旧页。
 
 也可以把其他来源的公开人类评论整理成：
 

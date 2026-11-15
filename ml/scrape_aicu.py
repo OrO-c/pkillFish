@@ -202,6 +202,12 @@ def main() -> int:
     parser.add_argument("--since", default=DEFAULT_SINCE)
     parser.add_argument("--include-before-as-negatives", action="store_true")
     parser.add_argument(
+        "--negative-pages",
+        type=int,
+        default=2,
+        help="在 2026-10 边界之后额外抓多少页作为负样本；0 表示不额外抓旧页",
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=0,
@@ -243,6 +249,7 @@ def main() -> int:
             comments: list[dict[str, Any]] = []
 
             page_number = 1
+            pre_cutoff_pages = 0
             while True:
                 if args.max_pages > 0 and page_number > args.max_pages:
                     break
@@ -289,8 +296,12 @@ def main() -> int:
                 if cursor.get("is_end"):
                     break
                 oldest = min((parse_time(row["ctime"]) for row in page_rows if row), default=None) if page_rows else None
-                if oldest and oldest < since and not args.include_before_as_negatives:
-                    break
+                if oldest and oldest < since:
+                    if not args.include_before_as_negatives or args.negative_pages <= 0:
+                        break
+                    pre_cutoff_pages += 1
+                    if pre_cutoff_pages >= args.negative_pages:
+                        break
                 time.sleep(args.delay)
                 page_number += 1
 
@@ -306,7 +317,11 @@ def main() -> int:
                         row["label"] = 1
                         positives.append(row)
                         positive_keys.add(key)
-                elif args.include_before_as_negatives and key not in negative_keys:
+                elif (
+                    args.include_before_as_negatives
+                    and args.negative_pages > 0
+                    and key not in negative_keys
+                ):
                     row["label"] = 0
                     negatives.append(row)
                     negative_keys.add(key)
