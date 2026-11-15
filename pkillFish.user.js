@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.8
+// @version      1.5.9
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.8';
+  const VERSION = '1.5.9';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -96,7 +96,7 @@
   const MAX_BATCH_REPORTS = 10;
   const MAX_REPORT_QUEUE = 50;
   const ML_FORMAT = 'pkillfish-ml-v1';
-  const ML_NORMALIZATION = 'nfkc-lower-url-mention-modelmask-v2';
+  const ML_NORMALIZATION = 'nfkc-lower-url-mention-modelmask-v3';
   const ML_MAX_BYTES = 2 * 1024 * 1024;
   const MID_RE = /^[1-9]\d{0,18}$/;
   const RPID_RE = /^[1-9]\d{0,18}$/;
@@ -374,7 +374,6 @@
     }
 
     const tokens = [
-      'f:' + mlLengthBucket(Array.from(normalized).length),
       normalized.indexOf('<url>') !== -1 ? 'f:has_url' : 'f:no_url',
       normalized.indexOf('<mention>') !== -1 ? 'f:has_mention' : 'f:no_mention',
       ML_EMOJI_RE.test(normalized) ? 'f:has_emoji' : 'f:no_emoji',
@@ -396,10 +395,14 @@
   function mlScoreText(text) {
     if (!mlModel) return null;
     const buckets = mlFeatureBuckets(text, mlModel.features);
-    let sum = mlModel.bias;
+    let sum = 0;
     for (const bucket of buckets) {
       sum += mlModel.weights[bucket] * mlModel.quantScale;
     }
+    if (mlModel.features.featureNorm === 'l2') {
+      sum /= Math.sqrt(Math.max(1, buckets.size));
+    }
+    sum += mlModel.bias;
     const probability = 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, sum))));
     return { probability: probability, features: buckets.size };
   }
@@ -1687,6 +1690,9 @@
       if (!isPlainObject(features)) throw new Error('缺少 features');
       if (features.normalization && features.normalization !== ML_NORMALIZATION) {
         throw new Error('模型版本与当前脚本不兼容，请重新训练/更新模型');
+      }
+      if (features.featureNorm && features.featureNorm !== 'l2') {
+        throw new Error('模型特征归一化方式不兼容');
       }
       const buckets = clampInt(features.buckets, 16, 262144, 0);
       if (!buckets) throw new Error('features.buckets 无效');

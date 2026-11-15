@@ -125,7 +125,6 @@ def feature_tokens(text: str, ngram_min: int, ngram_max: int) -> list[str]:
 
     tokens.extend(
         [
-            "f:" + length_bucket(len(normalized)),
             "f:has_url" if "<url>" in normalized else "f:no_url",
             "f:has_mention" if "<mention>" in normalized else "f:no_mention",
             "f:has_emoji" if EMOJI_RE.search(normalized) else "f:no_emoji",
@@ -465,7 +464,8 @@ def main() -> int:
 
     spec = {
         "version": FEATURE_VERSION,
-        "normalization": "nfkc-lower-url-mention-modelmask-v2",
+        "normalization": "nfkc-lower-url-mention-modelmask-v3",
+        "featureNorm": "l2",
         "ngramMin": args.ngram_min,
         "ngramMax": args.ngram_max,
         "buckets": args.buckets,
@@ -479,7 +479,8 @@ def main() -> int:
         for row in part:
             features = sorted(hashed_features(row["text"], spec))
             indices.extend(features)
-            data.extend([1.0] * len(features))
+            norm = math.sqrt(len(features)) if features else 1.0
+            data.extend([1.0 / norm] * len(features))
             indptr.append(len(indices))
         return csr_matrix(
             (np.asarray(data, dtype=np.float32), np.asarray(indices, dtype=np.int32), np.asarray(indptr, dtype=np.int32)),
