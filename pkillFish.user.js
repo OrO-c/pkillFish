@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.0.0
+// @version      1.1.0
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -596,6 +596,17 @@
   let candidates = new Set();
   let candidateList = [];
   let nodeMap = new Map();
+  let recordCandidates = new Map();
+
+  // “已屏蔽肥鱼”筛选视图状态
+  let fishFilterActive = false;
+  let filterButton = null;
+  let filterHost = null;
+  let filterHiddenNodes = new Map();
+  let filterDebounce = null;
+  let filterNoticeEl = null;
+  let filterHeaderObservers = new WeakSet();
+  let filterHeaderRetry = new WeakMap();
   let pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
 
   let burstTracker = new Map();
@@ -1787,10 +1798,12 @@
     state.log.unshift(record);
     if (state.log.length > LIMITS.maxLog) state.log.length = LIMITS.maxLog;
     nodeMap.set(record.id, stored);
+    recordCandidates.set(record.id, candidate);
     pruneNodeMap();
     bumpStat(decision.reason);
     saveState();
     if (!suppressUI) refreshUI();
+    scheduleFilterRefresh();
     debug('hidden', {
       mid: record.mid,
       reason: record.reason,
@@ -1804,6 +1817,9 @@
     for (let i = 0; i < state.log.length; i += 1) ids.add(state.log[i].id);
     for (const key of Array.from(nodeMap.keys())) {
       if (!ids.has(key)) nodeMap.delete(key);
+    }
+    for (const key of Array.from(recordCandidates.keys())) {
+      if (!ids.has(key)) recordCandidates.delete(key);
     }
   }
 
@@ -1866,6 +1882,11 @@
 
     unhideNodes(nodeMap.get(id));
     record.restored = true;
+    const candidate = recordCandidates.get(id);
+    if (candidate) {
+      candidate.hidden = false;
+      candidate.restored = true;
+    }
 
     if (mode === 'mid') {
       if (record.mid) addWhitelistEntry({ mid: record.mid });
@@ -1877,6 +1898,7 @@
     renderLog();
     renderSettings();
     refreshUI();
+    scheduleFilterRefresh();
   }
 
   function restoreByMid(mid) {
@@ -1888,8 +1910,14 @@
       if (record.mid !== mid || record.restored) continue;
       unhideNodes(nodeMap.get(record.id));
       record.restored = true;
+      const candidate = recordCandidates.get(record.id);
+      if (candidate) {
+        candidate.hidden = false;
+        candidate.restored = true;
+      }
       restored += 1;
     }
+    scheduleFilterRefresh();
     saveState();
     renderLog();
     renderSettings();
@@ -2132,6 +2160,7 @@
       candidates.delete(old);
     }
     injectReportButton(candidate);
+    scheduleFilterRefresh();
 
     if (!settings.enabled) return;
     const decision = evaluate(candidate);
@@ -2256,6 +2285,7 @@
       saveState();
       refreshUI();
       if (currentTab === 'log') renderLog();
+      scheduleFilterRefresh();
     }
   }
 
@@ -2475,7 +2505,7 @@
   };
 
   function scanChildren(parent, depth) {
-    if (!parent || depth > 14) return;
+    if (!parent || depth > 24) return;
     const children = parent.children;
     if (!children) return;
     for (let i = 0; i < children.length; i += 1) scanNode(children[i], depth + 1);
@@ -2495,7 +2525,7 @@
   }
 
   function scanNode(node, depth) {
-    if (!node || node.nodeType !== 1 || depth > 14) return;
+    if (!node || node.nodeType !== 1 || depth > 24) return;
     if (node.id === 'pkillfish-root') return;
 
     const tag = node.tagName ? node.tagName.toLowerCase() : '';
@@ -2523,6 +2553,7 @@
     if (tag === SELECTORS.newHost) {
       if (node.shadowRoot) {
         observeShadow(node.shadowRoot);
+        ensureFilterButton(node);
         scanChildren(node.shadowRoot, depth + 1);
       } else {
         scheduleNodeRescan(node, depth, 500);
@@ -2536,6 +2567,10 @@
       } else {
         scheduleNodeRescan(node, depth, 500);
       }
+      return;
+    }
+    if (tag === 'bili-comments-header-renderer') {
+      ensureFilterButtonForHeader(node);
       return;
     }
     if (SKIP_BILI_TAGS[tag]) return;
@@ -2564,15 +2599,22 @@
 
   function onMutations(mutations) {
     try {
+      let interesting = false;
       for (let i = 0; i < mutations.length; i += 1) {
         const mutation = mutations[i];
         if (mutation.type !== 'childList') continue;
         const added = mutation.addedNodes;
         for (let j = 0; j < added.length; j += 1) {
           const node = added[j];
-          if (node && node.nodeType === 1 && isInteresting(node)) queueScan(node);
+          if (node && node.nodeType === 1 && isInteresting(node)) {
+            queueScan(node);
+            interesting = true;
+          }
         }
       }
+      // 只在真的新增了评论结构时刷新筛选视图；
+      // 避免筛选提示条的插入/移除再次触发自己。
+      if (fishFilterActive && interesting) scheduleFilterRefresh();
     } catch (err) {
       debug('mutation handling failed', err && err.message);
     }
@@ -2635,6 +2677,431 @@
       clearTimeout(scanTimer);
       scanTimer = null;
     }
+  }
+
+  /* ==========================================================================
+   * “已屏蔽肥鱼”评论筛选视图
+   *
+   * 只在用户点击按钮时启用，不改变正常评论区的规则：
+   *   - 普通模式：根评论命中隐藏整楼；楼中楼命中只隐藏该条回复，父评论和其他回复保持可见。
+   *   - 筛选模式：只显示本页有屏蔽记录的楼；楼中楼命中时把父评论一起显示。
+   *   - 退出筛选：按日志记录恢复普通模式的隐藏状态，不新增统计或日志。
+   * ========================================================================== */
+
+  function closestComposedTag(node, tagName) {
+    let current = node;
+    let guard = 0;
+    while (current && guard < 30) {
+      guard += 1;
+      if (
+        current.nodeType === 1 &&
+        current.tagName &&
+        current.tagName.toLowerCase() === tagName
+      ) {
+        return current;
+      }
+      if (current.host) current = current.host;
+      else current = current.parentNode;
+    }
+    return null;
+  }
+
+  function getThreadForNode(node) {
+    return closestComposedTag(node, SELECTORS.newThread);
+  }
+
+  function getFilterFeed() {
+    if (filterHost && filterHost.isConnected && filterHost.shadowRoot) {
+      const feed = filterHost.shadowRoot.querySelector('#feed');
+      if (feed) return feed;
+    }
+    try {
+      const hosts = document.querySelectorAll(SELECTORS.newHost);
+      for (let i = 0; i < hosts.length; i += 1) {
+        const feed =
+          hosts[i].shadowRoot && hosts[i].shadowRoot.querySelector('#feed');
+        if (feed) {
+          filterHost = hosts[i];
+          return feed;
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function ensureFilterButtonForHeader(header) {
+    let node = header;
+    let guard = 0;
+    while (node && guard < 20) {
+      guard += 1;
+      if (
+        node.nodeType === 1 &&
+        node.tagName &&
+        node.tagName.toLowerCase() === SELECTORS.newHost
+      ) {
+        ensureFilterButton(node);
+        return;
+      }
+      if (node.host) node = node.host;
+      else node = node.parentNode;
+    }
+  }
+
+  function retryFilterHeader(host) {
+    if (!host || !host.isConnected) return;
+    const attempts = filterHeaderRetry.get(host) || 0;
+    if (attempts >= 6) return;
+    filterHeaderRetry.set(host, attempts + 1);
+    setTimeout(function () {
+      if (active && host.isConnected) ensureFilterButton(host);
+    }, 400 + attempts * 400);
+  }
+
+  function ensureFilterButton(host) {
+    if (!host || !host.shadowRoot) return false;
+    filterHost = host;
+
+    const header = host.shadowRoot.querySelector('bili-comments-header-renderer');
+    if (!header || !header.shadowRoot) {
+      retryFilterHeader(host);
+      return false;
+    }
+    const headerShadow = header.shadowRoot;
+
+    if (!filterHeaderObservers.has(headerShadow)) {
+      filterHeaderObservers.add(headerShadow);
+      try {
+        new MutationObserver(function () {
+          ensureFilterButton(host);
+        }).observe(headerShadow, { childList: true, subtree: true });
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    const existing = headerShadow.querySelector('[data-pf-filter-button]');
+    if (existing) {
+      filterButton = existing;
+      updateFilterButton();
+      return true;
+    }
+
+    const sortActions =
+      headerShadow.querySelector('#sort-actions') || headerShadow.querySelector('#navbar');
+    if (!sortActions) {
+      retryFilterHeader(host);
+      return false;
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('data-pf-filter-button', '1');
+    button.textContent = '已屏蔽肥鱼';
+    button.title = '显示已被屏蔽的评论；楼中楼会带出父评论';
+    button.setAttribute('aria-pressed', 'false');
+    button.style.cssText =
+      'all:unset;cursor:pointer;color:inherit;font:inherit;font-size:13px;' +
+      'line-height:20px;padding:0 0 0 10px;margin-left:2px;' +
+      'border-left:1px solid rgba(128,128,128,0.25);white-space:nowrap;';
+    button.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleFishFilter();
+    });
+
+    sortActions.appendChild(button);
+    filterButton = button;
+    updateFilterButton();
+    return true;
+  }
+
+  function countConnectedBlockedRecords() {
+    let count = 0;
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.restored) continue;
+      const nodes = nodeMap.get(record.id);
+      if (!nodes) continue;
+      for (let j = 0; j < nodes.length; j += 1) {
+        if (nodes[j][0] && nodes[j][0].isConnected) {
+          count += 1;
+          break;
+        }
+      }
+    }
+    return count;
+  }
+
+  function updateFilterButton() {
+    if (!filterButton || !filterButton.isConnected) {
+      filterButton = null;
+      return;
+    }
+    if (filterButton.textContent !== '已屏蔽肥鱼') {
+      filterButton.textContent = '已屏蔽肥鱼';
+    }
+    filterButton.style.opacity = fishFilterActive ? '1' : '0.72';
+    filterButton.style.fontWeight = fishFilterActive ? '600' : '400';
+    filterButton.style.textDecoration = fishFilterActive ? 'underline' : 'none';
+    filterButton.setAttribute('aria-pressed', fishFilterActive ? 'true' : 'false');
+    filterButton.title =
+      '显示已被屏蔽的评论（本页 ' +
+      countConnectedBlockedRecords() +
+      ' 条）；楼中楼会带出父评论';
+  }
+
+  function filterHide(node) {
+    if (!node || !node.isConnected) return;
+    if (node === filterNoticeEl) return;
+    if (filterHiddenNodes.has(node)) return;
+    const previous = node.style.display;
+    filterHiddenNodes.set(node, previous);
+    node.setAttribute('data-pf-filter-hidden', '1');
+    node.style.setProperty('display', 'none', 'important');
+  }
+
+  function filterShow(node) {
+    if (!node || !node.isConnected) return;
+    if (filterHiddenNodes.has(node)) {
+      const previous = filterHiddenNodes.get(node);
+      if (previous) node.style.display = previous;
+      else node.style.removeProperty('display');
+      filterHiddenNodes.delete(node);
+    }
+    node.removeAttribute('data-pf-filter-hidden');
+  }
+
+  function clearFilterHides() {
+    for (const [node, previous] of filterHiddenNodes) {
+      if (!node || !node.isConnected) continue;
+      if (previous) node.style.display = previous;
+      else node.style.removeProperty('display');
+      node.removeAttribute('data-pf-filter-hidden');
+    }
+    filterHiddenNodes = new Map();
+  }
+
+  function clearNormalHidesForFilter() {
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.restored) continue;
+      unhideNodes(nodeMap.get(record.id));
+    }
+  }
+
+  function restoreNormalHidesFromRecords() {
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.restored) continue;
+      const nodes = nodeMap.get(record.id);
+      if (!nodes) continue;
+      for (let j = 0; j < nodes.length; j += 1) {
+        const node = nodes[j][0];
+        if (!node || !node.isConnected) continue;
+        node.removeAttribute('data-pf-filter-hidden');
+        node.setAttribute('data-pf-hidden', '1');
+        node.setAttribute('data-pf-reason', record.reason || 'rules');
+        node.setAttribute('aria-hidden', 'true');
+        node.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }
+
+  function collectFilterGroups() {
+    const groups = new Map();
+    const standalone = new Set();
+
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.restored) continue;
+      const nodes = nodeMap.get(record.id);
+      if (!nodes || !nodes.length) continue;
+
+      for (let j = 0; j < nodes.length; j += 1) {
+        const node = nodes[j][0];
+        if (!node || !node.isConnected) continue;
+
+        const thread = getThreadForNode(node);
+        if (thread) {
+          let group = groups.get(thread);
+          if (!group) {
+            group = {
+              thread: thread,
+              rootBlocked: false,
+              replies: new Set(),
+              records: new Set(),
+              count: 0,
+              legacy: false
+            };
+            groups.set(thread, group);
+          }
+          group.records.add(record.id);
+          group.count = group.records.size;
+
+          const tag = node.tagName ? node.tagName.toLowerCase() : '';
+          if (node === thread || tag === SELECTORS.newComment || tag === SELECTORS.newThread) {
+            group.rootBlocked = true;
+          } else {
+            const reply = closestComposedTag(node, SELECTORS.newReply);
+            if (reply) group.replies.add(reply);
+            else group.rootBlocked = true;
+          }
+          continue;
+        }
+
+        const owner =
+          node.closest && node.closest('.reply-item, .comment-item')
+            ? node.closest('.reply-item, .comment-item')
+            : null;
+
+        if (owner) {
+          let group = groups.get(owner);
+          if (!group) {
+            group = {
+              thread: owner,
+              rootBlocked: false,
+              replies: new Set(),
+              records: new Set(),
+              count: 0,
+              legacy: true
+            };
+            groups.set(owner, group);
+          }
+          group.records.add(record.id);
+          group.count = group.records.size;
+          const sub = node.closest ? node.closest('.sub-reply-item') : null;
+          if (sub) group.replies.add(sub);
+          else group.rootBlocked = true;
+        } else {
+          standalone.add(node);
+        }
+      }
+    }
+
+    return { groups: groups, standalone: standalone };
+  }
+
+  function showThreadRoot(thread) {
+    if (!thread || !thread.shadowRoot) return;
+    const roots = thread.shadowRoot.querySelectorAll(SELECTORS.newComment);
+    for (let i = 0; i < roots.length; i += 1) filterShow(roots[i]);
+  }
+
+  function applyThreadReplies(thread, group) {
+    if (!thread || !thread.shadowRoot) return;
+    const repliesRenderer = thread.shadowRoot.querySelector(SELECTORS.newReplies);
+    if (!repliesRenderer) return;
+
+    // 根评论本身命中、且没有命中的楼中楼时，楼中楼整块都不属于筛选结果。
+    if (group.rootBlocked && group.replies.size === 0) {
+      filterHide(repliesRenderer);
+      return;
+    }
+    filterShow(repliesRenderer);
+
+    const repliesRoot = repliesRenderer.shadowRoot;
+    if (!repliesRoot) return;
+
+    const replies = repliesRoot.querySelectorAll(SELECTORS.newReply);
+    for (let i = 0; i < replies.length; i += 1) {
+      if (group.replies.has(replies[i])) filterShow(replies[i]);
+      else filterHide(replies[i]);
+    }
+  }
+
+  function removeFilterNotice() {
+    if (filterNoticeEl && filterNoticeEl.parentNode) {
+      filterNoticeEl.parentNode.removeChild(filterNoticeEl);
+    }
+    filterNoticeEl = null;
+  }
+
+  function renderFilterNotice(feed, count) {
+    removeFilterNotice();
+    if (!feed) return;
+    const notice = document.createElement('div');
+    notice.setAttribute('data-pf-filter-notice', '1');
+    notice.style.cssText =
+      'padding:18px 0;color:inherit;opacity:0.6;font-size:13px;' +
+      'line-height:1.6;text-align:center;';
+    notice.textContent = count
+      ? '已屏蔽肥鱼：本页 ' + count + ' 条。楼中楼会带出父评论。'
+      : '已屏蔽肥鱼：本页暂无记录。';
+    feed.insertBefore(notice, feed.firstChild);
+    filterNoticeEl = notice;
+  }
+
+  function applyFilterView() {
+    if (!active || !fishFilterActive) return;
+    const feed = getFilterFeed();
+    if (!feed) return;
+
+    clearFilterHides();
+    clearNormalHidesForFilter();
+
+    const collected = collectFilterGroups();
+    const groups = collected.groups;
+    let visible = 0;
+
+    const threads = feed.querySelectorAll(SELECTORS.newThread);
+    for (let i = 0; i < threads.length; i += 1) {
+      const thread = threads[i];
+      const group = groups.get(thread);
+      if (!group) {
+        filterHide(thread);
+        continue;
+      }
+      filterShow(thread);
+      showThreadRoot(thread);
+      applyThreadReplies(thread, group);
+      visible += group.count;
+    }
+
+    for (const node of collected.standalone) {
+      if (node && node.isConnected) {
+        filterShow(node);
+        visible += 1;
+      }
+    }
+
+    renderFilterNotice(feed, visible);
+    updateFilterButton();
+  }
+
+  function scheduleFilterRefresh() {
+    if (!active || !fishFilterActive || filterDebounce) return;
+    filterDebounce = setTimeout(function () {
+      filterDebounce = null;
+      if (active && fishFilterActive) applyFilterView();
+    }, 60);
+  }
+
+  function toggleFishFilter() {
+    if (!active) return;
+    if (fishFilterActive) exitFishFilter();
+    else enterFishFilter();
+  }
+
+  function enterFishFilter() {
+    if (!active) return;
+    fishFilterActive = true;
+    updateFilterButton();
+    applyFilterView();
+  }
+
+  function exitFishFilter() {
+    if (!fishFilterActive) return;
+    fishFilterActive = false;
+    if (filterDebounce) {
+      clearTimeout(filterDebounce);
+      filterDebounce = null;
+    }
+    clearFilterHides();
+    removeFilterNotice();
+    restoreNormalHidesFromRecords();
+    updateFilterButton();
   }
 
   /* ==========================================================================
@@ -3014,11 +3481,14 @@
 
     ui.clearLog.addEventListener('click', function () {
       if (!window.confirm('清空日志？已隐藏的评论不会自动恢复。')) return;
+      if (fishFilterActive) exitFishFilter();
       state.log = [];
       nodeMap.clear();
+      recordCandidates.clear();
       saveState(true);
       renderLog();
       refreshUI();
+      scheduleFilterRefresh();
       setNotice('日志已清空。');
     });
 
@@ -3241,6 +3711,10 @@
       else removeReportButtons();
     }
 
+    if (!settings.enabled && fishFilterActive) {
+      exitFishFilter();
+    }
+
     if (settings.enabled) {
       if (!previousEnabled || previousSignature !== rulesSignature()) {
         rescanCandidates();
@@ -3303,6 +3777,11 @@
         if (record.mid === mid && !record.restored) {
           unhideNodes(nodeMap.get(record.id));
           record.restored = true;
+          const candidate = recordCandidates.get(record.id);
+          if (candidate) {
+            candidate.hidden = false;
+            candidate.restored = true;
+          }
           restored += 1;
         }
       }
@@ -3431,6 +3910,17 @@
   }
 
   function resetPageState() {
+    if (fishFilterActive) {
+      fishFilterActive = false;
+      clearFilterHides();
+      removeFilterNotice();
+    }
+    filterButton = null;
+    filterHost = null;
+    if (filterDebounce) {
+      clearTimeout(filterDebounce);
+      filterDebounce = null;
+    }
     candidates = new Set();
     candidateList = [];
     processed = new WeakSet();
@@ -3439,6 +3929,7 @@
     reportHosts = new WeakSet();
     reportButtons = new Set();
     nodeMap = new Map();
+    recordCandidates = new Map();
     pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
     resetRuleTrackers();
     pendingRoots.clear();
@@ -3482,6 +3973,7 @@
 
   function stop() {
     if (!active) return;
+    if (fishFilterActive) exitFishFilter();
     active = false;
     stopObservers();
     closePanel();
