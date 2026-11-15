@@ -330,9 +330,10 @@ Issue 创建（report 标签）
 - 评论原文不能为空，不能是模板占位符。
 - 写入前重新校验整份 `blacklist.json`：重复 UID、非法字段、`revoked` 冲突、超大文件都会失败。
 - `revoked` 中的 UID 不会被自动重新加入，必须人工处理。
-- 单次流程只处理一个 Issue；并发用 `concurrency` 串行化，推送前 `pull --rebase`。
+- 同一个 Issue 的多个事件用 `concurrency` 串行；不同 Issue 允许并行。推送冲突时，失败的任务会重置到最新 `main`，重新应用本 Issue，再重试推送，避免 GitHub 全局并发组取消合法的其他 Issue。
 - Issue 创建时模板会自动加 `report` 标签，这也会触发一次 `labeled` workflow，但 `authorize` 会把它跳过。这个 skipped run 是正常的，不代表流程失败。
 - 关闭 Issue 时：`completed` 视为通过，`not planned` 视为不通过；如果关闭人没有 write/maintain/admin 权限，会自动跳过。
+- 如果关闭多个 Issue 时看到 `Canceling since a higher priority waiting request`，那是旧版全局并发组的行为；新版已改成按 Issue 分组，正常情况下不会再互相取消。
 - 失败时不提交、不关闭 Issue，并回复失败原因。
 
 ### 启用步骤
