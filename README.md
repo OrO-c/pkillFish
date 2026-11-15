@@ -10,7 +10,7 @@
 - 使用远端 UID 黑名单和独立关键词规则，同时保留本地白名单。
 - 提供批量上报队列和 GitHub Issue 审核流程。
 
-当前脚本版本：`1.5.1`
+当前脚本版本：`1.5.2`
 
 ## 目录
 
@@ -155,7 +155,7 @@
 - 自动屏蔽的模型命中评论不显示上报按钮。
 - 模型地址可以在设置中填写；留空使用默认模型仓库地址。
 
-默认模型地址是 `https://raw.githubusercontent.com/OrO-c/pkillFish-models/main/model.json`。模型仓库需要维护者单独创建并发布；未发布时加载会失败。训练、采集和模型发布说明见 [ml/README.md](ml/README.md)。
+默认模型地址是 `https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json`，模型随主仓库发布。训练、采集和模型发布说明见 [ml/README.md](ml/README.md)。
 
 ## 屏蔽规则
 
@@ -251,7 +251,7 @@
 
 关键词规则与 UID 黑名单完全分离。关键词文件由远端内容整体替换，删除关键词后下一次更新即生效。
 
-实验模型是单独文件，不放在 `blacklist.json` 或 `keywords.json` 中；默认从模型仓库拉取，详见 [ml/README.md](ml/README.md)。
+实验模型是单独文件，不放在 `blacklist.json` 或 `keywords.json` 中；默认从主仓库的 `ml/artifacts/model.json` 拉取，详见 [ml/README.md](ml/README.md)。
 
 ### 更新与缓存
 
@@ -347,7 +347,7 @@ pf:v1:keywords-meta
 | 启用独立关键词屏蔽 | 开 | 使用 `keywords.json` |
 | 启用实验性模型 | 开 | 不自动加载模型，需手动点击加载 |
 | 仅在名称旁标记 | 开 | 关闭后模型命中评论折叠进“已屏蔽肥鱼” |
-| 模型地址 | 空 | 留空使用模型仓库默认地址；必须是 HTTPS |
+| 模型地址 | 空 | 留空使用主仓库的 `ml/artifacts/model.json`；必须是 HTTPS |
 | 离线模式 | 关 | 跳过远端请求，只使用缓存 |
 | 显示“上报可疑鱼”按钮 | 开 | 关闭后移除所有上报按钮 |
 | 调试日志 | 关 | 仅写本地 `console.debug` |
@@ -450,7 +450,7 @@ python ml/train_model.py --help
 - 短时高频规则只能统计当前页面，不能跨视频或跨账号统计。
 - GitHub Raw 可能缓存旧文件；安装或更新时可使用 jsDelivr 地址。
 - 实验模型是辅助信号，受训练样本和阈值影响，不能保证零误判；误判时使用日志恢复或白名单。
-- 模型仓库和模型文件需要维护者单独发布；默认地址不存在时加载会失败。
+- 模型文件和训练数据分开管理：模型随主仓库发布，原始训练样本不提交。
 - 本脚本不提供账号安全、封禁或举报功能。
 
 ## 贡献

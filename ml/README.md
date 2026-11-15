@@ -4,7 +4,7 @@
 
 - `scrape_aicu.py`：通过 Firefox 访问 aicu.cc 的公开查询接口，采集指定 UID 的历史评论。
 - `train_model.py`：训练字符 n-gram + 逻辑回归模型，导出浏览器可加载的 `model.json`。
-- `artifacts/`：本地训练产物；不会提交到本仓库。
+- `artifacts/`：训练产物；其中 `model.json` / `model.card.md` 随主仓库发布，其他中间文件可忽略。
 - `data/`：本地样本；不会提交到本仓库。
 
 模型只保存权重和特征配置，不包含原始评论。
@@ -157,41 +157,24 @@ ml/artifacts/model.card.md
 
 ## 发布模型
 
-训练产物可以放在独立仓库，例如：
+模型默认随主仓库发布，路径固定为：
 
 ```text
-https://github.com/OrO-c/pkillFish-models
+ml/artifacts/model.json
+ml/artifacts/model.card.md
 ```
 
-把 `model.json` 和 `model.card.md` 放到该仓库根目录：
+默认加载地址：
 
 ```text
-pkillFish-models/
-├── model.json
-└── model.card.md
+https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json
 ```
 
-默认加载地址是：
+训练完成后，把新的 `model.json` 和 `model.card.md` 提交到主仓库即可。原始训练数据仍在 `.gitignore` 中，不会提交。
 
-```text
-https://raw.githubusercontent.com/OrO-c/pkillFish-models/main/model.json
-```
+也可以把模型放到独立仓库、jsDelivr 或自己的静态服务器，然后在 pkillFish 设置页的“模型地址”中填写完整 HTTPS URL。
 
-如果使用其他仓库、jsDelivr 或自己的静态服务器，在 pkillFish 设置页的“模型地址”中填写完整 HTTPS URL。
-
-创建独立仓库的示例：
-
-```bash
-mkdir pkillFish-models && cd pkillFish-models
-git init
-git remote add origin git@github.com:<your-name>/pkillFish-models.git
-cp ../pkillFish/ml/artifacts/model.json .
-cp ../pkillFish/ml/artifacts/model.card.md .
-git add model.json model.card.md
-git commit -m "model: initial release"
-git push -u origin main
-```
-
+## 在脚本中使用
 ## 在脚本中使用
 
 1. 打开 pkillFish 设置页；
