@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.1.2
+// @version      1.1.3
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.1.2';
+  const VERSION = '1.1.3';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -93,6 +93,7 @@
   const DEFAULT_SETTINGS = {
     enabled: true,
     rulesEnabled: true,
+    keywordRulesEnabled: false,
     offline: false,
     reportEnabled: true,
     debug: false,
@@ -670,6 +671,7 @@
     const boolKeys = [
       'enabled',
       'rulesEnabled',
+      'keywordRulesEnabled',
       'offline',
       'reportEnabled',
       'debug',
@@ -1355,25 +1357,29 @@
       }
     }
 
-    if (candidate.uname) {
-      const uname = normalizeForMatch(candidate.uname);
-      for (let i = 0; i < keywordList.length; i += 1) {
-        const kw = keywordList[i];
-        if (kw && uname.indexOf(kw) !== -1) {
-          hits.push('nickname');
-          score += settings.weights.nickname;
-          break;
+    // 关键词规则目前默认关闭：昵称/话术字面量容易误伤普通用户。
+    // 临时需要时可在面板重新打开；UID 黑名单、头像指纹、高频、模板同文不受影响。
+    if (settings.keywordRulesEnabled) {
+      if (candidate.uname) {
+        const uname = normalizeForMatch(candidate.uname);
+        for (let i = 0; i < keywordList.length; i += 1) {
+          const kw = keywordList[i];
+          if (kw && uname.indexOf(kw) !== -1) {
+            hits.push('nickname');
+            score += settings.weights.nickname;
+            break;
+          }
         }
       }
-    }
 
-    if (candidate.text) {
-      const text = normalizeForMatch(candidate.text);
-      for (let i = 0; i < compiledPatterns.length; i += 1) {
-        if (compiledPatterns[i].test(text)) {
-          hits.push('phrase');
-          score += settings.weights.phrase;
-          break;
+      if (candidate.text) {
+        const text = normalizeForMatch(candidate.text);
+        for (let i = 0; i < compiledPatterns.length; i += 1) {
+          if (compiledPatterns[i].test(text)) {
+            hits.push('phrase');
+            score += settings.weights.phrase;
+            break;
+          }
         }
       }
     }
@@ -2444,7 +2450,7 @@
       if (node.matches && node.matches(SELECTORS.newReply)) return true;
       if (node.matches && node.matches(SELECTORS.newReplies)) return true;
       if (node.matches && node.matches(SELECTORS.legacyItem)) return true;
-      if (node.tagName && node.tagName.indexOf('BILI-') === 0 && node.shadowRoot) return true;
+      if (node.tagName && node.tagName.indexOf('BILI-') === 0) return true;
       if (!node.childElementCount) return false;
       if (node.querySelector && node.querySelector(SELECTORS.newHost)) return true;
       if (node.querySelector && node.querySelector(SELECTORS.newComment)) return true;
@@ -2568,7 +2574,9 @@
     deferredScans.set(node, count + 1);
     setTimeout(function () {
       if (!active || !node.isConnected) return;
-      if (node.shadowRoot) scanChildren(node.shadowRoot, depth + 1);
+      // 重新走完整的 scanNode：既补扫 shadow 内容，也补挂 feed observer 和筛选按钮。
+      // 只在 scanChildren 上补扫会漏掉“host 先插入、shadowRoot 后创建”的情况。
+      scanNode(node, depth);
     }, delay);
   }
 
@@ -2626,6 +2634,7 @@
       // 未知的 B 站自定义元素可能是新版包装层，保守地向下探测一层，
       // 已知的叶子组件已在 SKIP_BILI_TAGS 中跳过。
       if (node.shadowRoot && depth < 8) scanChildren(node.shadowRoot, depth + 1);
+      else if (!node.shadowRoot) scheduleNodeRescan(node, depth, 600);
       scanChildren(node, depth + 1);
       return;
     }
@@ -3342,6 +3351,7 @@
           <div class="pf-section-title">开关</div>
           <label class="pf-check"><input type="checkbox" id="pf-enabled"> 启用屏蔽</label>
           <label class="pf-check"><input type="checkbox" id="pf-rules"> 启用规则扫描</label>
+          <label class="pf-check"><input type="checkbox" id="pf-keyword-rules"> 启用关键词规则（昵称/话术，当前默认关闭）</label>
           <label class="pf-check"><input type="checkbox" id="pf-offline"> 离线模式（不拉取远端黑名单）</label>
           <label class="pf-check"><input type="checkbox" id="pf-report"> 显示“上报可疑鱼”按钮</label>
           <label class="pf-check"><input type="checkbox" id="pf-debug"> 调试日志（仅输出到控制台）</label>
@@ -3472,6 +3482,7 @@
       stState: shadow.querySelector('#pf-st-state'),
       enabled: shadow.querySelector('#pf-enabled'),
       rules: shadow.querySelector('#pf-rules'),
+      keywordRules: shadow.querySelector('#pf-keyword-rules'),
       offline: shadow.querySelector('#pf-offline'),
       report: shadow.querySelector('#pf-report'),
       debug: shadow.querySelector('#pf-debug'),
@@ -3519,6 +3530,7 @@
     const checkboxRefs = [
       ui.enabled,
       ui.rules,
+      ui.keywordRules,
       ui.offline,
       ui.report,
       ui.debug,
@@ -3709,6 +3721,7 @@
     if (!ui || !state) return;
     ui.enabled.checked = !!settings.enabled;
     ui.rules.checked = !!settings.rulesEnabled;
+    ui.keywordRules.checked = !!settings.keywordRulesEnabled;
     ui.offline.checked = !!settings.offline;
     ui.report.checked = !!settings.reportEnabled;
     ui.debug.checked = !!settings.debug;
@@ -3734,6 +3747,7 @@
   function rulesSignature() {
     return JSON.stringify({
       rulesEnabled: settings.rulesEnabled,
+      keywordRulesEnabled: settings.keywordRulesEnabled,
       threshold: settings.threshold,
       weights: settings.weights,
       burst: settings.burst,
@@ -3752,6 +3766,7 @@
 
     settings.enabled = !!ui.enabled.checked;
     settings.rulesEnabled = !!ui.rules.checked;
+    settings.keywordRulesEnabled = !!ui.keywordRules.checked;
     settings.offline = !!ui.offline.checked;
     settings.reportEnabled = !!ui.report.checked;
     settings.debug = !!ui.debug.checked;
@@ -4067,6 +4082,12 @@
     setTimeout(function () {
       if (active) queueScan(document);
     }, 2200);
+    setTimeout(function () {
+      if (active) queueScan(document);
+    }, 5000);
+    setTimeout(function () {
+      if (active) queueScan(document);
+    }, 10000);
   }
 
   function stop() {
