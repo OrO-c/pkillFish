@@ -48,7 +48,7 @@ jobs:
 
       - name: Check Python helpers
         run: |
-          python3 -m py_compile ml/scrape_aicu.py ml/scrape_human.py ml/train_model.py
+          python3 -m py_compile ml/scrape_aicu.py ml/scrape_human.py ml/train_model.py ml/collect_false_positives.py
           python3 -m unittest discover -s ml/tests -p 'test_*.py'
 
       - name: Run unit tests

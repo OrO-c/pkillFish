@@ -175,11 +175,17 @@ def load_rows(paths: Iterable[Path], include_precut: bool = False) -> list[dict[
                 label = int(label)
                 if label not in (0, 1):
                     continue
+                try:
+                    weight = float(row.get("weight", 1.0))
+                except (TypeError, ValueError):
+                    weight = 1.0
+                weight = max(0.1, min(20.0, weight))
                 rows.append(
                     {
                         "text": text,
                         "uid": uid,
                         "label": label,
+                        "weight": weight,
                         "ctime": str(row.get("ctime") or ""),
                         "uname": str(row.get("uname") or ""),
                     }
@@ -197,6 +203,8 @@ def dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         existing = by_text.get(key)
         if existing is None:
             by_text[key] = row
+        elif existing["label"] == row["label"]:
+            existing["weight"] = max(float(existing.get("weight", 1.0)), float(row.get("weight", 1.0)))
         elif existing["label"] != row["label"]:
             # 相同文本出现冲突标签：丢弃，避免把模棱两可的模板喂给模型。
             conflicts += 1
@@ -456,6 +464,7 @@ def main() -> int:
 
     x_train = matrix(train)
     y_train = np.asarray([row["label"] for row in train], dtype=np.int8)
+    w_train = np.asarray([float(row.get("weight", 1.0)) for row in train], dtype=np.float64)
     x_valid = matrix(valid)
     y_valid = np.asarray([row["label"] for row in valid], dtype=np.int8)
     x_test = matrix(test)
@@ -468,7 +477,7 @@ def main() -> int:
         max_iter=3000,
         random_state=args.seed,
     )
-    model.fit(x_train, y_train)
+    model.fit(x_train, y_train, sample_weight=w_train)
 
     valid_prob = model.predict_proba(x_valid)[:, 1]
     threshold, threshold_info = choose_threshold(y_valid, valid_prob, args.target_precision)

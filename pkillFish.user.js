@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.3
+// @version      1.5.4
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.3';
+  const VERSION = '1.5.4';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -741,6 +741,7 @@
   let mlError = '';
   let mlPredictions = new WeakMap();
   let mlBadges = new Set();
+  let mlFalsePositiveButtons = new Set();
 
   let burstTracker = new Map();
   let templateTracker = new Map();
@@ -1758,7 +1759,10 @@
 
   function ensureMlBadge(candidate) {
     if (!candidate || !candidate.el || !candidate.el.isConnected) return;
-    if (candidate.mlBadge && candidate.mlBadge.isConnected) return;
+    if (candidate.mlBadge && candidate.mlBadge.isConnected) {
+      ensureMlFalsePositiveButton(candidate);
+      return;
+    }
     const host = mlNameHost(candidate);
     if (!host || !host.parent) return;
 
@@ -1791,10 +1795,65 @@
     }
     candidate.mlBadge = badge;
     mlBadges.add(badge);
+    ensureMlFalsePositiveButton(candidate);
+  }
+
+  function ensureMlFalsePositiveButton(candidate) {
+    if (!mlModel || !settings.mlEnabled) return;
+    if (!candidate || !candidate.mlBadge || !candidate.mlBadge.isConnected) return;
+    if (candidate.mlFalsePositiveBtn && candidate.mlFalsePositiveBtn.isConnected) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('data-pf-ml-feedback', '1');
+    button.textContent = '报告误判';
+    button.title = '把这条评论作为机器学习误判样本上报；不会加入黑名单';
+    button.style.cssText =
+      'display:inline-flex;align-items:center;height:16px;line-height:16px;' +
+      'padding:0 4px;margin-left:4px;border:1px solid #b42318;background:#fff;' +
+      'color:#b42318;font-size:10px;font-weight:400;font-family:inherit;' +
+      'border-radius:2px;white-space:nowrap;vertical-align:middle;' +
+      'box-sizing:border-box;cursor:pointer;';
+    if (window.innerWidth <= 600) button.style.fontSize = '9px';
+
+    button.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const built = buildMlFalsePositiveIssueUrl(candidate);
+      if (built.error) {
+        setNotice(built.error, true);
+        return;
+      }
+      const ok = gmOpenTab(built.url);
+      if (!ok) {
+        setNotice('浏览器拦截了新标签页，请允许弹窗后重试。', true);
+        return;
+      }
+      setNotice('已打开机器学习误判反馈 Issue，不会自动加入黑名单。');
+    });
+
+    candidate.mlBadge.parentNode.insertBefore(button, candidate.mlBadge.nextSibling);
+    candidate.mlFalsePositiveBtn = button;
+    mlFalsePositiveButtons.add(button);
+  }
+
+  function removeMlFalsePositiveButton(candidate) {
+    if (!candidate) return;
+    const button = candidate.mlFalsePositiveBtn;
+    if (button) {
+      try {
+        if (button.parentNode) button.parentNode.removeChild(button);
+      } catch (_) {
+        /* ignore */
+      }
+      mlFalsePositiveButtons.delete(button);
+    }
+    candidate.mlFalsePositiveBtn = null;
   }
 
   function removeMlBadge(candidate) {
     if (!candidate) return;
+    removeMlFalsePositiveButton(candidate);
     const badge = candidate.mlBadge;
     if (badge) {
       try {
@@ -1808,6 +1867,15 @@
   }
 
   function removeAllMlBadges() {
+    for (const button of mlFalsePositiveButtons) {
+      try {
+        if (button.parentNode) button.parentNode.removeChild(button);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    mlFalsePositiveButtons = new Set();
+    for (const candidate of candidates) candidate.mlFalsePositiveBtn = null;
     for (const badge of mlBadges) {
       try {
         if (badge.parentNode) badge.parentNode.removeChild(badge);
@@ -2782,6 +2850,88 @@
         '\n> 原文过长，受 GitHub URL 长度限制已截断。请在上报时手动补充完整原文。';
     }
 
+    return { url: lastUrl };
+  }
+
+  function buildMlFalsePositiveIssueUrl(candidate) {
+    const repo = normalizeRepo(settings.reportRepo);
+    if (!repo) return { error: '上报仓库地址无效，请填写 owner/repo。' };
+    if (!candidate) return { error: '没有可用的评论信息。' };
+    resolvePageMeta(candidate);
+
+    const mid = digitsOnly(candidate.mid);
+    const rpid = digitsOnly(candidate.rpid);
+    const link = commentPermalink(candidate);
+    if (!mid || !isBilibiliCommentUrl(link)) {
+      return { error: '这条评论缺少有效 UID 或链接，无法提交误判反馈。' };
+    }
+
+    const modelVersion = mlModel ? mlModel.version || 'unknown' : 'unknown';
+    const score = Number.isFinite(candidate.mlScore)
+      ? candidate.mlScore.toFixed(4)
+      : 'unknown';
+    const title =
+      '[ml-false-positive] UID ' + mid + (rpid ? ' / rpid ' + rpid : '');
+    const meta = [
+      '<!-- pkillfish:ml-false-positive',
+      'uid: ' + mid,
+      'mid: ' + mid,
+      'rpid: ' + rpid,
+      'link: ' + link,
+      'model: ' + modelVersion,
+      'score: ' + score,
+      '-->'
+    ].join('\n');
+
+    const originalText = cleanText(candidate.text || '', 1800, true).replace(/~~~+/g, '~~ ~');
+
+    function composeBody(textValue, truncatedNote) {
+      return [
+        meta,
+        '',
+        '### 机器学习误判反馈',
+        '',
+        '- UID: ' + mid,
+        '- 昵称: ' + (cleanText(candidate.uname || '', 80, false) || '未知'),
+        '- 评论链接: ' + link,
+        '- 模型版本: ' + modelVersion,
+        '- 模型分数: ' + score,
+        '',
+        '> 这是一条被实验模型判为 AI、但用户认为属于正常人类的评论。',
+        '> 该 Issue 只用于收集负样本，不会自动加入 UID 黑名单。',
+        '',
+        '### 评论原文',
+        '',
+        '~~~text',
+        textValue || '（未获取到评论原文）',
+        '~~~',
+        truncatedNote || '',
+        '',
+        '### 确认',
+        '',
+        '- [ ] 我确认这是一条公开评论，没有提交账号凭据或隐私数据',
+        '- [ ] 我认为这是机器学习误判，可以作为负样本'
+      ].join('\n');
+    }
+
+    let textValue = originalText;
+    let truncatedNote = '';
+    let lastUrl = '';
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const params = new URLSearchParams();
+      params.set('labels', 'ml-false-positive');
+      params.set('title', title);
+      params.set('body', composeBody(textValue, truncatedNote));
+      lastUrl = 'https://github.com/' + repo + '/issues/new?' + params.toString();
+      if (lastUrl.length <= 7200 || textValue.length <= 120) break;
+      textValue = textValue.slice(0, Math.max(80, Math.floor(textValue.length * 0.65)));
+      truncatedNote =
+        '\n> 原文过长，受 GitHub URL 长度限制已截断；可以在 Issue 中手动补充。';
+    }
+
+    if (lastUrl.length > 7200) {
+      return { error: '误判反馈链接过长，请手动缩短评论原文后重试。' };
+    }
     return { url: lastUrl };
   }
 

@@ -176,6 +176,36 @@ https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json
 
 也可以把模型放到独立仓库、jsDelivr 或自己的静态服务器，然后在 pkillFish 设置页的“模型地址”中填写完整 HTTPS URL。
 
+## 误判负样本
+
+被实验模型判定为 AI 的评论旁会出现“报告误判”按钮，打开带 `ml-false-positive` 标签的 Issue。它只用于收集负样本，不会进入 UID 黑名单。
+
+审核规则：
+
+- 关闭为 `completed`，或加 `ml-false-positive-accepted` 标签：通过，作为加权负样本；
+- 关闭为 `not planned`，或加 `wontfix`：不通过，不收集。
+
+收集：
+
+```bash
+python ml/collect_false_positives.py --repo OrO-c/pkillFish
+```
+
+脚本只读取公开 Issue，输出 `ml/data/false-positives.jsonl`。通过的样本带：
+
+```json
+{"label": 0, "weight": 3}
+```
+
+训练时 `train_model.py` 会把这些权重传给逻辑回归；普通负样本权重为 1。默认 `--data ml/data` 会自动加载这个文件。
+
+需要在 GitHub 仓库中创建标签：
+
+```text
+ml-false-positive
+ml-false-positive-accepted
+```
+
 ## 在脚本中使用
 ## 在脚本中使用
 
