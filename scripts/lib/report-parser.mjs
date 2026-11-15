@@ -97,6 +97,23 @@ export function isPlaceholderComment(text) {
 /**
  * @returns {{ok:boolean, errors:string[], meta:{uid:string,mid:string,rpid:string,oid:string,type:string,link:string}, commentText:string}}
  */
+export function parseBatchTable(body) {
+  const text = String(body == null ? '' : body);
+  const map = new Map();
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(
+      /^\|\s*\d+\s*\|\s*`([0-9]{1,19})`\s*\|\s*(.*?)\s*\|\s*\[打开\]\(([^)]+)\)\s*\|\s*(.*?)\s*\|\s*$/
+    );
+    if (!match) continue;
+    const mid = match[1];
+    const uname = cleanString(match[2].replace(/\\\|/g, '|'), 80);
+    const textValue = cleanString(match[4].replace(/\\\|/g, '|'), 500);
+    if (!map.has(mid)) map.set(mid, { uname, text: textValue });
+  }
+  return map;
+}
+
 export function parseIssueBody(body) {
   const errors = [];
   const warnings = [];
@@ -170,6 +187,16 @@ export function parseIssueBody(body) {
 
     if (!reports.length) {
       errors.push('批量上报中没有可用的 UID');
+    }
+
+    // 兼容 1.2.x 生成的批量 Issue：旧版隐藏 JSON 没有 uname/text，
+    // 但可读表格里有昵称和摘要，补回来供关键词检查使用。
+    const tableMeta = parseBatchTable(raw);
+    for (const report of reports) {
+      const table = tableMeta.get(report.mid);
+      if (!table) continue;
+      if (!report.uname) report.uname = table.uname;
+      if (!report.text) report.text = table.text;
     }
 
     const first = reports[0] || { uid: '', mid: '', rpid: '', oid: '', type: '', link: '' };

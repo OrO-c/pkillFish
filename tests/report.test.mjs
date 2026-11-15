@@ -4,6 +4,7 @@ import {
   extractCommentText,
   normalizeBilibiliLink,
   parseBatchBlock,
+  parseBatchTable,
   parseIssueBody,
   parseMetaBlock,
   reasonFromIssue
@@ -191,4 +192,24 @@ test('旧版单条 Issue 仍返回 reports[0]', () => {
   assert.equal(parsed.ok, true);
   assert.equal(parsed.reports.length, 1);
   assert.equal(parsed.reports[0].mid, '123456789');
+});
+
+
+test('旧版批量 Issue 从表格补昵称和摘要', () => {
+  const body = `<!-- pkillfish:batch
+[{"mid":"123456789","rpid":"111","link":"https://www.bilibili.com/video/BV1GJ411x7h7/#reply111"}]
+-->
+
+### 批量上报（1 条）
+
+| # | UID | 昵称 | 评论链接 | 摘要 |
+|---|---|---|---|---|
+| 1 | \`123456789\` | 表格昵称 | [打开](https://www.bilibili.com/video/BV1GJ411x7h7/#reply111) | 表格摘要 |
+`;
+  const table = parseBatchTable(body);
+  assert.equal(table.get('123456789').uname, '表格昵称');
+  const parsed = parseIssueBody(body);
+  assert.equal(parsed.ok, true, parsed.errors.join('\n'));
+  assert.equal(parsed.reports[0].uname, '表格昵称');
+  assert.equal(parsed.reports[0].text, '表格摘要');
 });

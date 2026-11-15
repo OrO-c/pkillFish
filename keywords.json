@@ -2,6 +2,10 @@
   "schemaVersion": 1,
   "version": 1,
   "updatedAt": "2026-11-15T00:00:00.000Z",
-  "nameKeywords": [],
+  "nameKeywords": [
+    "dsh-agent",
+    "dsh agent",
+    "deepseek harness"
+  ],
   "commentKeywords": []
 }

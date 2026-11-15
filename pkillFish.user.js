@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.3.0
+// @version      1.3.1
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -4184,7 +4184,13 @@
     if (blacklistMeta.updating || keywordMeta.updating) stateText = '更新中';
     else if (settings.offline) stateText = '离线模式';
     else if (blacklistMeta.error || keywordMeta.error) stateText = '上次更新失败';
-    else if (!blacklistDoc.entries.length) stateText = '使用本地缓存（空）';
+    else if (
+      !blacklistDoc.entries.length &&
+      !(keywordDoc.nameKeywords || []).length &&
+      !(keywordDoc.commentKeywords || []).length
+    ) {
+      stateText = '使用本地缓存（空）';
+    }
     ui.stState.textContent = stateText;
 
     ui.update.disabled =
