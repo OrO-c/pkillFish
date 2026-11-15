@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.2
+// @version      1.5.3
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.2';
+  const VERSION = '1.5.3';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -4099,6 +4099,32 @@
     }
     .pf-queue-foot .pf-btn { margin-left: auto; }
     .pf-queue-notice { padding: 0 9px 7px; }
+    .pf-chunks {
+      position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%);
+      z-index: 2147483645; width: 380px; max-width: calc(100vw - 28px);
+      max-height: 55vh; overflow: auto; background: #fff; color: #1a1a1a;
+      border: 1px solid #b8b8b8; border-radius: 2px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      font: 12px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "Microsoft YaHei", sans-serif; text-align: left;
+    }
+    .pf-chunks-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-bottom: 1px solid #e3e3e3; font-weight: 600;
+    }
+    .pf-chunks-head .pf-linkbtn { margin-left: auto; font-weight: 400; }
+    .pf-chunks-list { padding: 6px 9px; }
+    .pf-chunk-link {
+      display: block; padding: 6px 7px; margin: 4px 0; border: 1px solid #ddd;
+      color: #1a1a1a; text-decoration: none; border-radius: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pf-chunk-link:hover { background: #f4f4f4; }
+    .pf-chunk-link.pf-chunk-done {
+      color: #999; border-color: #e5e5e5; background: #fafafa;
+      text-decoration: line-through;
+    }
+    .pf-chunks-note { padding: 0 9px 8px; }
     .pf-foot {
       padding: 6px 10px; border-top: 1px solid #eee;
       color: #777; font-size: 11px;
@@ -4269,6 +4295,17 @@
       </div>
       <div id="pf-queue-notice" class="pf-note pf-queue-notice"></div>
     </section>
+
+    <section id="pf-chunks" class="pf-chunks" hidden aria-label="分片上报">
+      <div class="pf-chunks-head">
+        <span>需要分步提交 <span id="pf-chunks-count">0</span> 个分片</span>
+        <button id="pf-chunks-close" class="pf-linkbtn" type="button">关闭</button>
+      </div>
+      <div id="pf-chunks-list" class="pf-chunks-list"></div>
+      <div id="pf-chunks-note" class="pf-note pf-chunks-note">
+        点击每个分片打开对应的 GitHub Issue；已打开的分片会加删除线。全部分片提交后，再清空待上报列表。
+      </div>
+    </section>
   `;
 
   function q(selector) {
@@ -4359,7 +4396,12 @@
       queueAll: shadow.querySelector('#pf-queue-all'),
       queueSubmit: shadow.querySelector('#pf-queue-submit'),
       queueClear: shadow.querySelector('#pf-queue-clear'),
-      queueNotice: shadow.querySelector('#pf-queue-notice')
+      queueNotice: shadow.querySelector('#pf-queue-notice'),
+      chunks: shadow.querySelector('#pf-chunks'),
+      chunksCount: shadow.querySelector('#pf-chunks-count'),
+      chunksList: shadow.querySelector('#pf-chunks-list'),
+      chunksClose: shadow.querySelector('#pf-chunks-close'),
+      chunksNote: shadow.querySelector('#pf-chunks-note')
     };
 
     bindUI();
@@ -4480,11 +4522,16 @@
       submitSelectedReports();
     });
 
+    ui.chunksClose.addEventListener('click', function () {
+      hideChunkPanel();
+    });
+
     ui.queueClear.addEventListener('click', function () {
       if (!state.reportQueue.length) return;
       if (!window.confirm('清空待上报列表？已经提交到 GitHub 的内容不受影响。')) return;
       state.reportQueue = [];
       saveState(true);
+      hideChunkPanel();
       renderReportQueue();
     });
 
@@ -4915,6 +4962,7 @@
     while (list.firstChild) list.removeChild(list.firstChild);
 
     if (!state.reportQueue.length) {
+      hideChunkPanel();
       updateQueueControls();
       return;
     }
@@ -5030,7 +5078,7 @@
       .replace(/\r?\n/g, ' ');
   }
 
-  function buildBatchIssueUrl(items) {
+  function buildBatchIssueUrl(items, chunkMeta) {
     const repo = normalizeRepo(settings.reportRepo);
     if (!repo) return { error: '上报仓库地址无效，请填写 owner/repo。' };
     if (!items.length) return { error: '请先勾选要提交的评论。' };
@@ -5064,7 +5112,11 @@
     }
 
     const meta = '<!-- pkillfish:batch\n' + JSON.stringify(reports) + '\n-->';
-    const title = '[fish-report] 批量可疑评论（' + items.length + ' 条）';
+    let title = '[fish-report] 批量可疑评论（' + items.length + ' 条';
+    if (chunkMeta && chunkMeta.total > 1) {
+      title += ' · 分片 ' + chunkMeta.index + '/' + chunkMeta.total;
+    }
+    title += '）';
 
     function composeBody(excerptLength) {
       const rows = items.map(function (item, index) {
@@ -5094,6 +5146,13 @@
         '### 批量上报（' + items.length + ' 条）',
         '',
         '> 来自 pkillFish 左下角待上报面板。摘要为节选，完整评论请点评论链接。',
+        chunkMeta && chunkMeta.total > 1
+          ? '> 本 Issue 是分片 ' +
+            chunkMeta.index +
+            '/' +
+            chunkMeta.total +
+            '，请按分片链接分别提交。'
+          : '',
         '>',
         '> 提交后不会自动加入黑名单。维护者审核后打 `resolved` 或关闭为 `completed` 才会加入；打 `wontfix` 或关闭为 `not planned` 表示不加入。',
         '',
@@ -5128,10 +5187,101 @@
 
     if (lastUrl.length > 7200) {
       return {
-        error: '所选评论过多，生成的上报链接过长，请减少勾选后重试。'
+        error: '所选评论过多，生成的上报链接过长，请减少勾选后重试。',
+        code: 'too_long'
       };
     }
     return { url: lastUrl };
+  }
+
+  function hideChunkPanel() {
+    if (!ui || !ui.chunks) return;
+    ui.chunks.hidden = true;
+    if (ui.chunksList) {
+      while (ui.chunksList.firstChild) ui.chunksList.removeChild(ui.chunksList.firstChild);
+    }
+  }
+
+  function renderChunkPanel(chunks) {
+    if (!ui || !ui.chunks || !ui.chunksList) return;
+    if (!chunks || chunks.length <= 1) {
+      hideChunkPanel();
+      return;
+    }
+
+    while (ui.chunksList.firstChild) ui.chunksList.removeChild(ui.chunksList.firstChild);
+    ui.chunksCount.textContent = String(chunks.length);
+    ui.chunks.hidden = false;
+
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i];
+      const link = document.createElement('a');
+      link.className = 'pf-chunk-link';
+      link.href = chunk.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent =
+        '分片 ' + (i + 1) + '/' + chunks.length + ' · ' + chunk.items.length + ' 条 · 打开 Issue';
+      link.title = '打开这个分片的 GitHub Issue 新建页';
+      link.addEventListener('click', function (event) {
+        const ok = gmOpenTab(chunk.url);
+        if (ok) {
+          event.preventDefault();
+          link.classList.add('pf-chunk-done');
+          link.setAttribute('aria-disabled', 'true');
+          link.title = '已打开；再次点击可重新打开';
+        }
+      });
+      ui.chunksList.appendChild(link);
+    }
+  }
+
+  function buildReportChunks(items) {
+    const whole = buildBatchIssueUrl(items);
+    if (whole.url) {
+      return { chunks: [{ url: whole.url, items: items }] };
+    }
+    if (!whole.code || whole.code !== 'too_long') {
+      return { error: whole.error || '无法生成上报链接。' };
+    }
+
+    const groups = [];
+    let current = [];
+    for (let i = 0; i < items.length; i += 1) {
+      if (current.length >= MAX_BATCH_REPORTS) {
+        groups.push(current);
+        current = [];
+      }
+      const trial = current.concat([items[i]]);
+      const built = buildBatchIssueUrl(trial);
+      if (built.url) {
+        current = trial;
+        continue;
+      }
+      if (built.code === 'too_long' && current.length) {
+        groups.push(current);
+        current = [items[i]];
+        const single = buildBatchIssueUrl(current);
+        if (!single.url) {
+          return { error: single.error || '单条评论无法生成上报链接。' };
+        }
+        continue;
+      }
+      return { error: built.error || '无法生成上报链接。' };
+    }
+    if (current.length) groups.push(current);
+    if (!groups.length) return { error: '无法生成上报链接。' };
+
+    const chunks = [];
+    for (let i = 0; i < groups.length; i += 1) {
+      const built = buildBatchIssueUrl(groups[i], {
+        index: i + 1,
+        total: groups.length
+      });
+      if (!built.url) return { error: built.error || '无法生成分片链接。' };
+      chunks.push({ url: built.url, items: groups[i] });
+    }
+    return { chunks: chunks };
   }
 
   function submitSelectedReports() {
@@ -5148,20 +5298,35 @@
       return;
     }
 
-    const built = buildBatchIssueUrl(selected);
-    if (built.error) {
-      setQueueNotice(built.error, true);
-      if (built.error.indexOf('仓库') !== -1) openPanel('settings');
+    const result = buildReportChunks(selected);
+    if (result.error) {
+      setQueueNotice(result.error, true);
+      if (result.error.indexOf('仓库') !== -1) openPanel('settings');
+      return;
+    }
+    if (result.chunks.length <= 1) {
+      hideChunkPanel();
+      const url = result.chunks[0] && result.chunks[0].url;
+      if (!url) {
+        setQueueNotice('无法生成上报链接。', true);
+        return;
+      }
+      const ok = gmOpenTab(url);
+      if (!ok) {
+        setQueueNotice('浏览器拦截了新标签页，请允许弹窗后重试。', true);
+        return;
+      }
+      setQueueNotice(
+        '已打开 GitHub Issue 新建页。确认提交后，可以点“清空”移除这些条目。'
+      );
       return;
     }
 
-    const ok = gmOpenTab(built.url);
-    if (!ok) {
-      setQueueNotice('浏览器拦截了新标签页，请允许弹窗后重试。', true);
-      return;
-    }
+    renderChunkPanel(result.chunks);
     setQueueNotice(
-      '已打开 GitHub Issue 新建页。确认提交后，可以点“清空”移除这些条目。'
+      '链接过长，已拆成 ' +
+        result.chunks.length +
+        ' 个分片。请逐个点击分片链接提交；已打开的分片会加删除线。'
     );
   }
 
@@ -5275,6 +5440,7 @@
   }
 
   function resetPageState() {
+    hideChunkPanel();
     if (mlModel) unloadMlModel(true);
     if (fishFilterActive) {
       fishFilterActive = false;
