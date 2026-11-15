@@ -12,3 +12,4 @@ _尚无变更。_
 - 移除 UID 3546914786117920（Issue [#1](https://github.com/OrO-c/pkillFish/issues/1)）：昵称“大肥鱼”关键词误伤，已加入 revoked
 - 新增 UID 3747575163259807（Issue [#2](https://github.com/OrO-c/pkillFish/issues/2)）：DSH / 大肥鱼 Agent 评论（社区上报）
 - 新增 UID 3632317318826423（Issue [#3](https://github.com/OrO-c/pkillFish/issues/3)）：DSH / 大肥鱼 Agent 评论（社区上报）
+- 新增 UID 3747578105564926（Issue [#5](https://github.com/OrO-c/pkillFish/issues/5)）：DSH / 大肥鱼 Agent 评论（社区上报）
