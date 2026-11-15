@@ -9,6 +9,7 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'pkillFish.user.js'
+      - 'ml/**'
       - '.github/workflows/**'
   pull_request:
     paths:
@@ -17,6 +18,7 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'pkillFish.user.js'
+      - 'ml/**'
       - '.github/workflows/**'
 
 permissions:
@@ -43,6 +45,11 @@ jobs:
 
       - name: Validate keywords
         run: node scripts/validate-keywords.mjs keywords.json
+
+      - name: Check Python helpers
+        run: |
+          python3 -m py_compile ml/scrape_aicu.py ml/train_model.py
+          python3 -m unittest discover -s ml/tests -p 'test_*.py'
 
       - name: Run unit tests
         run: node --test tests/*.test.mjs

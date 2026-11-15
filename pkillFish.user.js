@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.4.0
+// @version      1.5.0
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -68,6 +68,8 @@
     'https://raw.githubusercontent.com/' + DEFAULT_REPORT_REPO + '/main/blacklist.json';
   const DEFAULT_KEYWORDS_URL =
     'https://raw.githubusercontent.com/' + DEFAULT_REPORT_REPO + '/main/keywords.json';
+  const DEFAULT_ML_MODEL_URL =
+    'https://raw.githubusercontent.com/OrO-c/pkillFish-models/main/model.json';
 
   const STORAGE = {
     state: 'pf:v1:state',
@@ -93,6 +95,8 @@
   const BLACKLIST_SCHEMA = 1;
   const MAX_BATCH_REPORTS = 10;
   const MAX_REPORT_QUEUE = 50;
+  const ML_FORMAT = 'pkillfish-ml-v1';
+  const ML_MAX_BYTES = 2 * 1024 * 1024;
   const MID_RE = /^[1-9]\d{0,18}$/;
   const RPID_RE = /^[1-9]\d{0,18}$/;
 
@@ -102,6 +106,9 @@
     keywordRulesEnabled: false,
     keywordBlockEnabled: true,
     keywordUrl: '',
+    mlEnabled: true,
+    mlOnlyBadge: true,
+    mlModelUrl: '',
     offline: false,
     reportEnabled: true,
     debug: false,
@@ -300,6 +307,96 @@
       hash = Math.imul(hash, 0x01000193);
     }
     return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  const ML_URL_RE = /https?:\/\/\S+|www\.\S+/gi;
+  const ML_MENTION_RE = /@[A-Za-z0-9_\-\u4e00-\u9fff]+/g;
+  const ML_EMOJI_RE =
+    /[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/u;
+  const ML_BULLET_RE = /(^|\n)\s*(?:[-*•]|\d+[.、)])\s+/;
+  const ML_REPEAT_PUNCT_RE = /[!?！？]{2,}|[。.]{3,}/;
+  let mlEncoder = null;
+
+  function mlNormalizeText(value) {
+    let text = String(value == null ? '' : value);
+    try {
+      text = text.normalize('NFKC');
+    } catch (_) {
+      /* ignore */
+    }
+    text = text.toLowerCase();
+    text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+    text = text.replace(ML_URL_RE, ' <url> ');
+    text = text.replace(ML_MENTION_RE, ' <mention> ');
+    text = text.replace(/\s+/g, ' ').trim();
+    return Array.from(text).slice(0, 4000).join('');
+  }
+
+  function mlLengthBucket(length) {
+    if (length <= 20) return 'len_0_20';
+    if (length <= 50) return 'len_21_50';
+    if (length <= 100) return 'len_51_100';
+    if (length <= 300) return 'len_101_300';
+    return 'len_301_plus';
+  }
+
+  function mlFnv1aBytes(value) {
+    const text = String(value == null ? '' : value);
+    let hash = 0x811c9dc5;
+    if (!mlEncoder) mlEncoder = new TextEncoder();
+    const bytes = mlEncoder.encode(text);
+    for (let i = 0; i < bytes.length; i += 1) {
+      hash ^= bytes[i];
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+  }
+
+  function mlFeatureBuckets(text, spec) {
+    const buckets = new Set();
+    const normalized = mlNormalizeText(text);
+    if (!normalized) return buckets;
+
+    const chars = Array.from('^' + normalized + '$');
+    const minN = Math.max(1, Number(spec.ngramMin) || 1);
+    const maxN = Math.min(8, Number(spec.ngramMax) || 4);
+    for (let n = minN; n <= maxN; n += 1) {
+      for (let i = 0; i <= chars.length - n; i += 1) {
+        const gram = chars.slice(i, i + n).join('');
+        if (!gram.trim()) continue;
+        buckets.add(mlFnv1aBytes('g:' + gram) % spec.buckets);
+      }
+    }
+
+    const tokens = [
+      'f:' + mlLengthBucket(Array.from(normalized).length),
+      normalized.indexOf('<url>') !== -1 ? 'f:has_url' : 'f:no_url',
+      normalized.indexOf('<mention>') !== -1 ? 'f:has_mention' : 'f:no_mention',
+      ML_EMOJI_RE.test(normalized) ? 'f:has_emoji' : 'f:no_emoji',
+      ML_BULLET_RE.test(normalized) ? 'f:has_bullet' : 'f:no_bullet',
+      normalized.indexOf('?') !== -1 || normalized.indexOf('？') !== -1
+        ? 'f:has_question'
+        : 'f:no_question',
+      ML_REPEAT_PUNCT_RE.test(normalized) ? 'f:has_repeat_punct' : 'f:no_repeat_punct',
+      normalized.indexOf('!') !== -1 || normalized.indexOf('！') !== -1
+        ? 'f:has_exclaim'
+        : 'f:no_exclaim'
+    ];
+    for (let i = 0; i < tokens.length; i += 1) {
+      buckets.add(mlFnv1aBytes(tokens[i]) % spec.buckets);
+    }
+    return buckets;
+  }
+
+  function mlScoreText(text) {
+    if (!mlModel) return null;
+    const buckets = mlFeatureBuckets(text, mlModel.features);
+    let sum = mlModel.bias;
+    for (const bucket of buckets) {
+      sum += mlModel.weights[bucket] * mlModel.quantScale;
+    }
+    const probability = 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, sum))));
+    return { probability: probability, features: buckets.size };
   }
 
   function splitList(value, separators) {
@@ -638,7 +735,12 @@
   let filterSortExitBound = new WeakSet();
   let filterHeaderRetry = new WeakMap();
   let filterMasks = new Map();
-  let pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0 };
+  let pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, ml: 0 };
+  let mlModel = null;
+  let mlStatus = 'idle';
+  let mlError = '';
+  let mlPredictions = new WeakMap();
+  let mlBadges = new Set();
 
   let burstTracker = new Map();
   let templateTracker = new Map();
@@ -657,7 +759,7 @@
       schema: 1,
       settings: defaultSettings(),
       whitelist: { mids: [], rpids: [], fingerprints: [] },
-      stats: { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} },
+      stats: { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, ml: 0, byDay: {} },
       log: [],
       reportQueue: [],
       migrations: {
@@ -702,6 +804,8 @@
       'rulesEnabled',
       'keywordRulesEnabled',
       'keywordBlockEnabled',
+      'mlEnabled',
+      'mlOnlyBadge',
       'offline',
       'reportEnabled',
       'debug',
@@ -716,6 +820,7 @@
     out.reportRepo = normalizeRepo(repo) || def.reportRepo;
     out.blacklistUrl = cleanText(input.blacklistUrl, 500, false);
     out.keywordUrl = cleanText(input.keywordUrl, 500, false);
+    out.mlModelUrl = cleanText(input.mlModelUrl, 500, false);
     out.updateIntervalHours = clampNumber(
       input.updateIntervalHours,
       0.25,
@@ -771,13 +876,14 @@
   }
 
   function sanitizeStats(input) {
-    const out = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} };
+    const out = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, ml: 0, byDay: {} };
     if (!isPlainObject(input)) return out;
     out.total = clampInt(input.total, 0, 1000000000, 0);
     out.blacklist = clampInt(input.blacklist, 0, 1000000000, 0);
     out.keyword = clampInt(input.keyword, 0, 1000000000, 0);
     out.rules = clampInt(input.rules, 0, 1000000000, 0);
     out.model = clampInt(input.model, 0, 1000000000, 0);
+    out.ml = clampInt(input.ml, 0, 1000000000, 0);
     if (isPlainObject(input.byDay)) {
       const keys = Object.keys(input.byDay).sort();
       for (let i = 0; i < keys.length; i += 1) {
@@ -806,7 +912,8 @@
         r.reason === 'blacklist' ||
         r.reason === 'keyword' ||
         r.reason === 'rules' ||
-        r.reason === 'model'
+        r.reason === 'model' ||
+        r.reason === 'ml'
           ? r.reason
           : 'rules';
       out.push({
@@ -1503,6 +1610,300 @@
   }
 
   /* ==========================================================================
+   * 实验性：手动加载的轻量文本模型
+   *
+   * 模型只在用户点击“加载本页模型”时请求和解析；不写入 state，
+   * 页面切换时释放。默认只加名称旁标识，不隐藏；关闭“仅标记”后才折叠。
+   * ========================================================================== */
+
+  function mlModelUrl() {
+    return (settings.mlModelUrl || DEFAULT_ML_MODEL_URL).trim();
+  }
+
+  function mlStatusText() {
+    if (mlStatus === 'loading') return '加载中';
+    if (mlStatus === 'ready' && mlModel) return '已加载 v' + (mlModel.version || '?');
+    if (mlStatus === 'error') return '加载失败：' + (mlError || '未知错误');
+    return '未加载';
+  }
+
+  function mlStateApply() {
+    if (ui && ui.mlState) ui.mlState.textContent = mlStatusText();
+    if (ui && ui.mlLoad) {
+      ui.mlLoad.disabled =
+        !settings.mlEnabled || mlStatus === 'loading' || settings.offline;
+    }
+    if (ui && ui.mlUnload) ui.mlUnload.disabled = !mlModel;
+  }
+
+  function base64Bytes(value) {
+    const text = String(value || '').replace(/\s+/g, '');
+    if (!text) throw new Error('模型权重为空');
+    const raw = window.atob(text);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+
+  async function loadMlModel() {
+    if (!settings.mlEnabled) {
+      setNotice('请先启用实验性本地模型。', true);
+      return;
+    }
+    if (settings.offline) {
+      setNotice('离线模式不能加载模型。', true);
+      return;
+    }
+    if (mlStatus === 'loading') return;
+    if (mlModel) return;
+
+    const url = mlModelUrl();
+    if (!isHttpsUrl(url)) {
+      mlStatus = 'error';
+      mlError = '模型地址必须是 HTTPS';
+      mlStateApply();
+      return;
+    }
+
+    mlStatus = 'loading';
+    mlError = '';
+    mlStateApply();
+    setNotice('正在加载实验模型（仅当前页面）…');
+
+    try {
+      const res = await xhrGet(url, { Accept: 'application/json, */*' });
+      if (res.status !== 200) throw new Error('HTTP ' + res.status);
+      if (String(res.text).length > ML_MAX_BYTES) throw new Error('模型超过 2MB 上限');
+      const parsed = safeJsonParse(res.text);
+      if (!parsed || parsed.format !== ML_FORMAT) throw new Error('模型格式不支持');
+      const features = parsed.features;
+      if (!isPlainObject(features)) throw new Error('缺少 features');
+      const buckets = clampInt(features.buckets, 16, 262144, 0);
+      if (!buckets) throw new Error('features.buckets 无效');
+      if (typeof parsed.weights !== 'string') throw new Error('缺少权重');
+      const bytes = base64Bytes(parsed.weights);
+      if (bytes.length < buckets) throw new Error('权重数量不足');
+      const weights = new Int8Array(bytes.buffer, bytes.byteOffset, buckets);
+      const quantScale = Number(parsed.quantScale);
+      const bias = Number(parsed.bias);
+      const threshold = Number(parsed.threshold);
+      if (!Number.isFinite(quantScale) || quantScale <= 0) throw new Error('quantScale 无效');
+      if (!Number.isFinite(bias)) throw new Error('bias 无效');
+      if (!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) {
+        throw new Error('threshold 无效');
+      }
+
+      mlModel = {
+        version: cleanText(parsed.version || '', 40, false),
+        features: features,
+        weights: weights,
+        quantScale: quantScale,
+        bias: bias,
+        threshold: threshold,
+        metrics: isPlainObject(parsed.metrics) ? parsed.metrics : {}
+      };
+      mlStatus = 'ready';
+      mlError = '';
+      setNotice(
+        '实验模型已加载：' +
+          mlStatusText() +
+          '。仅对当前页面生效。'
+      );
+      mlApplyAll();
+    } catch (err) {
+      mlModel = null;
+      mlStatus = 'error';
+      mlError = truncate(err && err.message ? err.message : String(err), 160);
+      setNotice('模型加载失败：' + mlError, true);
+    } finally {
+      mlStateApply();
+      refreshUI();
+    }
+  }
+
+  function unloadMlModel(silent) {
+    const had = !!mlModel;
+    if (mlModel) {
+      mlRestoreAllMlHidden();
+      removeAllMlBadges();
+    }
+    mlModel = null;
+    mlPredictions = new WeakMap();
+    mlStatus = 'idle';
+    mlError = '';
+    if (had && !silent) setNotice('实验模型已卸载，相关标识和折叠已移除。');
+    mlStateApply();
+    refreshUI();
+  }
+
+  function mlNameHost(candidate) {
+    if (!candidate || !candidate.el) return null;
+    if (candidate.kind === 'new-root' || candidate.kind === 'new-reply') {
+      const userInfo = candidate.el.shadowRoot
+        ? candidate.el.shadowRoot.querySelector('bili-comment-user-info')
+        : null;
+      const root = userInfo && userInfo.shadowRoot;
+      if (root) {
+        const name = root.querySelector('#user-name');
+        if (name && name.parentNode) return { parent: name.parentNode, after: name };
+        const info = root.querySelector('#info');
+        if (info) return { parent: info, after: null };
+      }
+      return null;
+    }
+    const name = candidate.el.querySelector(SELECTORS.legacyName);
+    if (name && name.parentNode) return { parent: name.parentNode, after: name };
+    return null;
+  }
+
+  function ensureMlBadge(candidate) {
+    if (!candidate || !candidate.el || !candidate.el.isConnected) return;
+    if (candidate.mlBadge && candidate.mlBadge.isConnected) return;
+    const host = mlNameHost(candidate);
+    if (!host || !host.parent) return;
+
+    // B 站可能重建用户信息节点，先清掉同容器里的旧标识。
+    const stale = host.parent.querySelectorAll('[data-pf-ml-badge]');
+    for (let i = 0; i < stale.length; i += 1) {
+      try {
+        stale[i].parentNode.removeChild(stale[i]);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    const badge = document.createElement('span');
+    badge.setAttribute('data-pf-ml-badge', '1');
+    badge.textContent = '机器学习判定为AI生成';
+    badge.title = '实验性本地模型判定，可能误判；可在日志中恢复或加入白名单';
+    badge.style.cssText =
+      'display:inline-flex;align-items:center;height:16px;line-height:16px;' +
+      'padding:0 4px;margin-left:4px;background:#b42318;color:#fff;' +
+      'font-size:10px;font-weight:400;font-family:inherit;border-radius:2px;' +
+      'white-space:nowrap;vertical-align:middle;box-sizing:border-box;' +
+      'letter-spacing:0;';
+    if (window.innerWidth <= 600) badge.style.fontSize = '9px';
+
+    if (host.after && host.after.parentNode === host.parent) {
+      host.parent.insertBefore(badge, host.after.nextSibling);
+    } else {
+      host.parent.appendChild(badge);
+    }
+    candidate.mlBadge = badge;
+    mlBadges.add(badge);
+  }
+
+  function removeMlBadge(candidate) {
+    if (!candidate) return;
+    const badge = candidate.mlBadge;
+    if (badge) {
+      try {
+        if (badge.parentNode) badge.parentNode.removeChild(badge);
+      } catch (_) {
+        /* ignore */
+      }
+      mlBadges.delete(badge);
+    }
+    candidate.mlBadge = null;
+  }
+
+  function removeAllMlBadges() {
+    for (const badge of mlBadges) {
+      try {
+        if (badge.parentNode) badge.parentNode.removeChild(badge);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    mlBadges = new Set();
+    for (const candidate of candidates) candidate.mlBadge = null;
+  }
+
+  function mlRestoreCandidate(candidate) {
+    if (!candidate) return;
+    let changed = false;
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.reason !== 'ml' || record.restored) continue;
+      if (recordCandidates.get(record.id) !== candidate) continue;
+      unhideNodes(nodeMap.get(record.id));
+      record.restored = true;
+      changed = true;
+    }
+    if (candidate.hidden) candidate.hidden = false;
+    candidate.mlHidden = false;
+    candidate.restored = true;
+    injectReportButton(candidate);
+    if (changed) {
+      saveState();
+      refreshUI();
+      scheduleFilterRefresh();
+    }
+  }
+
+  function mlRestoreAllMlHidden() {
+    for (let i = 0; i < state.log.length; i += 1) {
+      const record = state.log[i];
+      if (record.reason !== 'ml' || record.restored) continue;
+      const candidate = recordCandidates.get(record.id);
+      if (candidate) {
+        unhideNodes(nodeMap.get(record.id));
+        record.restored = true;
+        candidate.hidden = false;
+        candidate.mlHidden = false;
+        candidate.restored = true;
+        injectReportButton(candidate);
+      }
+    }
+    scheduleFilterRefresh();
+  }
+
+  function mlApplyCandidate(candidate) {
+    if (!mlModel || !settings.mlEnabled) return;
+    if (!candidate || !candidate.el || !candidate.el.isConnected) return;
+    if (candidate.hidden && !candidate.mlHidden) return;
+
+    const result = mlScoreText(candidate.text || '');
+    if (!result) return;
+    candidate.mlScore = result.probability;
+
+    if (result.probability < mlModel.threshold) {
+      removeMlBadge(candidate);
+      if (candidate.mlHidden) mlRestoreCandidate(candidate);
+      return;
+    }
+
+    ensureMlBadge(candidate);
+    if (settings.mlOnlyBadge) {
+      if (candidate.mlHidden) mlRestoreCandidate(candidate);
+      return;
+    }
+
+    if (candidate.hidden) return;
+    const hidden = hideCandidate(candidate, {
+      block: true,
+      reason: 'ml',
+      detail: '实验性模型 p=' + result.probability.toFixed(3),
+      score: Math.round(result.probability * 100)
+    });
+    if (hidden) candidate.mlHidden = true;
+  }
+
+  function mlApplyAll() {
+    if (!mlModel || !settings.mlEnabled) return;
+    for (const candidate of candidates) {
+      if (candidate && candidate.el && candidate.el.isConnected) mlApplyCandidate(candidate);
+    }
+    scheduleFilterRefresh();
+  }
+
+  async function mlReloadForModeChange() {
+    if (!mlModel) return;
+    mlRestoreAllMlHidden();
+    mlApplyAll();
+  }
+
+  /* ==========================================================================
    * 规则匹配（黑名单优先，其后才是启发式规则）
    * ========================================================================== */
 
@@ -2064,7 +2465,9 @@
           ? 'keyword'
           : reason === 'model'
             ? 'model'
-            : 'rules';
+            : reason === 'ml'
+              ? 'ml'
+              : 'rules';
     state.stats.total += 1;
     state.stats[key] = (state.stats[key] || 0) + 1;
     const day = todayKey();
@@ -2550,6 +2953,7 @@
 
     injectReportButton(candidate);
     scheduleFilterRefresh();
+    if (mlModel) mlApplyCandidate(candidate);
     if (settings.enableLocalModel) queueModel(candidate);
   }
 
@@ -2658,8 +3062,9 @@
         const decision = evaluate(candidate);
         if (decision && decision.block) {
           hideCandidate(candidate, decision);
-        } else if (settings.enableLocalModel && !candidate.modelPending) {
-          queueModel(candidate);
+        } else {
+          if (mlModel) mlApplyCandidate(candidate);
+          if (settings.enableLocalModel && !candidate.modelPending) queueModel(candidate);
         }
       }
     } finally {
@@ -3725,6 +4130,7 @@
           <div class="pf-kv"><span>其中关键词</span><span id="pf-st-keyword">0</span></div>
           <div class="pf-kv"><span>其中规则</span><span id="pf-st-rules">0</span></div>
           <div class="pf-kv"><span>其中本地模型</span><span id="pf-st-model">0</span></div>
+          <div class="pf-kv"><span>其中实验模型</span><span id="pf-st-ml">0</span></div>
           <div class="pf-kv"><span>本次页面</span><span id="pf-st-page">0</span></div>
           <div class="pf-kv"><span>今日</span><span id="pf-st-today">0</span></div>
           <div class="pf-kv"><span>黑名单条目</span><span id="pf-st-blcount">0</span></div>
@@ -3753,6 +4159,22 @@
           <label class="pf-check"><input type="checkbox" id="pf-report"> 显示“上报可疑鱼”按钮</label>
           <label class="pf-check"><input type="checkbox" id="pf-debug"> 调试日志（仅输出到控制台）</label>
           <label class="pf-check"><input type="checkbox" id="pf-model"> 启用本地轻量模型钩子</label>
+
+          <div class="pf-section-title">实验性：本地文本模型</div>
+          <label class="pf-check"><input type="checkbox" id="pf-ml-enabled"> 启用实验性模型（手动加载，不自动占内存）</label>
+          <label class="pf-check"><input type="checkbox" id="pf-ml-only-badge"> 仅在名称旁标记，不隐藏</label>
+          <div class="pf-row">
+            <label for="pf-ml-url">模型地址</label>
+            <input id="pf-ml-url" type="text" spellcheck="false" placeholder="留空使用模型仓库默认地址">
+          </div>
+          <div class="pf-row">
+            <button id="pf-ml-load" class="pf-btn" type="button">加载本页模型</button>
+            <button id="pf-ml-unload" class="pf-btn" type="button">卸载</button>
+            <span id="pf-ml-state" class="pf-note">未加载</span>
+          </div>
+          <div class="pf-note">
+            模型只在点击“加载本页模型”时请求和解析；切换页面或卸载后释放内存。关闭“仅标记”后，命中评论会折叠进“已屏蔽肥鱼”，但仍显示红色标识。
+          </div>
 
           <div class="pf-section-title">黑名单与上报</div>
           <div class="pf-row">
@@ -3888,6 +4310,7 @@
       stKeyword: shadow.querySelector('#pf-st-keyword'),
       stRules: shadow.querySelector('#pf-st-rules'),
       stModel: shadow.querySelector('#pf-st-model'),
+      stMl: shadow.querySelector('#pf-st-ml'),
       stPage: shadow.querySelector('#pf-st-page'),
       stToday: shadow.querySelector('#pf-st-today'),
       stBlCount: shadow.querySelector('#pf-st-blcount'),
@@ -3905,6 +4328,12 @@
       report: shadow.querySelector('#pf-report'),
       debug: shadow.querySelector('#pf-debug'),
       model: shadow.querySelector('#pf-model'),
+      mlEnabled: shadow.querySelector('#pf-ml-enabled'),
+      mlOnlyBadge: shadow.querySelector('#pf-ml-only-badge'),
+      mlUrl: shadow.querySelector('#pf-ml-url'),
+      mlLoad: shadow.querySelector('#pf-ml-load'),
+      mlUnload: shadow.querySelector('#pf-ml-unload'),
+      mlState: shadow.querySelector('#pf-ml-state'),
       repo: shadow.querySelector('#pf-repo'),
       blUrl: shadow.querySelector('#pf-bl-url'),
       kwUrl: shadow.querySelector('#pf-kw-url'),
@@ -3992,6 +4421,14 @@
       updateAll(true);
     });
 
+    ui.mlLoad.addEventListener('click', function () {
+      loadMlModel();
+    });
+
+    ui.mlUnload.addEventListener('click', function () {
+      unloadMlModel(false);
+    });
+
     ui.save.addEventListener('click', function () {
       applyForm(true);
     });
@@ -4010,8 +4447,8 @@
 
     ui.clearStats.addEventListener('click', function () {
       if (!window.confirm('清空统计计数？日志与屏蔽状态不受影响。')) return;
-      state.stats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} };
-      pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0 };
+      state.stats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, ml: 0, byDay: {} };
+      pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, ml: 0 };
       saveState(true);
       refreshUI();
       setNotice('统计已清空。');
@@ -4156,6 +4593,7 @@
     ui.stKeyword.textContent = String(state.stats.keyword || 0);
     ui.stRules.textContent = String(state.stats.rules);
     ui.stModel.textContent = String(state.stats.model);
+    ui.stMl.textContent = String(state.stats.ml || 0);
     ui.stPage.textContent = String(pageStats.total);
     ui.stToday.textContent = String(state.stats.byDay[todayKey()] || 0);
     ui.stBlCount.textContent = String(blacklistDoc.entries.length);
@@ -4223,6 +4661,10 @@
     ui.report.checked = !!settings.reportEnabled;
     ui.debug.checked = !!settings.debug;
     ui.model.checked = !!settings.enableLocalModel;
+    ui.mlEnabled.checked = !!settings.mlEnabled;
+    ui.mlOnlyBadge.checked = !!settings.mlOnlyBadge;
+    ui.mlUrl.value = settings.mlModelUrl || '';
+    mlStateApply();
 
     ui.repo.value = settings.reportRepo || '';
     ui.blUrl.value = settings.blacklistUrl || '';
@@ -4260,6 +4702,9 @@
     if (!state) return;
     const previousReport = settings.reportEnabled;
     const previousEnabled = settings.enabled;
+    const previousMlEnabled = settings.mlEnabled;
+    const previousMlOnlyBadge = settings.mlOnlyBadge;
+    const previousMlUrl = settings.mlModelUrl;
     const previousSignature = rulesSignature();
     let repoInvalid = false;
 
@@ -4271,6 +4716,9 @@
     settings.reportEnabled = !!ui.report.checked;
     settings.debug = !!ui.debug.checked;
     settings.enableLocalModel = !!ui.model.checked;
+    settings.mlEnabled = !!ui.mlEnabled.checked;
+    settings.mlOnlyBadge = !!ui.mlOnlyBadge.checked;
+    settings.mlModelUrl = cleanText(ui.mlUrl.value, 500, false);
 
     const repoInput = cleanText(ui.repo.value, 140, false);
     const repoNormalized = normalizeRepo(repoInput);
@@ -4322,6 +4770,15 @@
     if (previousReport !== settings.reportEnabled) {
       if (settings.reportEnabled) injectAllReportButtons();
       else removeReportButtons();
+    }
+
+    if (!settings.mlEnabled && mlModel) {
+      unloadMlModel(true);
+    } else if (mlModel && previousMlUrl !== settings.mlModelUrl) {
+      unloadMlModel(true);
+      setNotice('模型地址已改变，请重新点击“加载本页模型”。');
+    } else if (mlModel && previousMlOnlyBadge !== settings.mlOnlyBadge) {
+      mlReloadForModeChange();
     }
 
     if (!settings.enabled && fishFilterActive) {
@@ -4739,7 +5196,9 @@
             ? '关键词'
             : record.reason === 'model'
               ? '本地模型'
-              : '规则';
+              : record.reason === 'ml'
+                ? '实验模型'
+                : '规则';
       meta.textContent =
         formatTime(record.ts) +
         ' · UID ' +
@@ -4816,6 +5275,7 @@
   }
 
   function resetPageState() {
+    if (mlModel) unloadMlModel(true);
     if (fishFilterActive) {
       fishFilterActive = false;
       clearFilterHides();
@@ -4958,6 +5418,7 @@
           keyword: state.stats.keyword,
           rules: state.stats.rules,
           model: state.stats.model,
+          ml: state.stats.ml,
           page: pageStats.total
         };
       },
@@ -4990,12 +5451,27 @@
       refreshKeywords: function () {
         return updateKeywords(true);
       },
+      loadMlModel: function () {
+        return loadMlModel();
+      },
+      unloadMlModel: function () {
+        unloadMlModel(false);
+      },
+      getMlStatus: function () {
+        return {
+          status: mlStatus,
+          error: mlError,
+          version: mlModel ? mlModel.version : '',
+          threshold: mlModel ? mlModel.threshold : 0
+        };
+      },
       openPanel: openPanel,
       _internals: {
         evaluateRules: evaluateRules,
         normalizeDoc: normalizeDoc,
         mergeDocs: mergeDocs,
-        buildIssueUrl: buildIssueUrl
+        buildIssueUrl: buildIssueUrl,
+        mlScoreText: mlScoreText
       }
     };
 

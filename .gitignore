@@ -3,3 +3,10 @@ node_modules/
 *.tmp
 *.tmp-*
 .DS_Store
+ml/data/raw/
+ml/data/*.jsonl
+ml/artifacts/*.json
+ml/artifacts/*.card.md
+ml/.venv/
+__pycache__/
+*.pyc
