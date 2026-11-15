@@ -217,25 +217,57 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
             {"method": "random", "groups": len(groups)},
         )
 
-    shuffled = list(groups)
-    np.random.default_rng(seed).shuffle(shuffled)
-    count = max(2, int(len(shuffled) * 0.2))
-    test_groups = set(shuffled[:count])
-    remaining = [g for g in shuffled if g not in test_groups]
-    valid_count = max(1, int(len(remaining) * 0.2))
-    valid_groups = set(remaining[:valid_count])
-    train_groups = set(remaining[valid_count:])
+    by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_group[row["uid"]].append(row)
+    group_counts = {uid: len(items) for uid, items in by_group.items()}
+    negative_groups = [
+        uid for uid, items in by_group.items() if any(row["label"] == 0 for row in items)
+    ]
+    positive_groups = [uid for uid in groups if uid not in set(negative_groups)]
+    rng = np.random.default_rng(seed)
+    negative_groups.sort(key=lambda uid: (group_counts[uid], uid))
+    rng.shuffle(positive_groups)
+    rng.shuffle(negative_groups)
 
-    train = [row for row in rows if row["uid"] in train_groups]
+    test_groups: set[str] = set()
+    valid_groups: set[str] = set()
+
+    # 正负 UID 分别抽 20% 进测试/验证，避免只按总组数抽时
+    # 正样本组被测试集吃光、验证集没有正样本。
+    def take(pool: list[str], fraction: float) -> tuple[list[str], list[str]]:
+        count = max(1, round(len(pool) * fraction)) if pool else 0
+        return pool[:count], pool[count:]
+
+    test_neg, rest_neg = take(negative_groups, 0.2)
+    valid_neg, train_neg = take(rest_neg, 0.2)
+    test_pos, rest_pos = take(positive_groups, 0.2)
+    valid_pos, train_pos = take(rest_pos, 0.2)
+
+    test_groups.update(test_neg)
+    test_groups.update(test_pos)
+    valid_groups.update(valid_neg)
+    valid_groups.update(valid_pos)
+
+    # 如果某一类样本太少导致训练集为空，回退一部分验证组给训练集。
+    if not train_neg and valid_neg:
+        train_neg.append(valid_neg.pop())
+    if not train_pos and valid_pos:
+        train_pos.append(valid_pos.pop())
+
+    train = [row for row in rows if row["uid"] not in test_groups and row["uid"] not in valid_groups]
     valid = [row for row in rows if row["uid"] in valid_groups]
     test = [row for row in rows if row["uid"] in test_groups]
-    return train, valid, test, {
-        "method": "group_by_uid",
+    info = {
+        "method": "group_by_uid_class_aware",
         "groups": len(groups),
         "testGroups": len(test_groups),
         "validGroups": len(valid_groups),
+        "testClasses": class_counts(test),
+        "validClasses": class_counts(valid),
+        "trainClasses": class_counts(train),
     }
-
+    return train, valid, test, info
 
 def class_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     counts = Counter(row["label"] for row in rows)

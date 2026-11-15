@@ -84,6 +84,25 @@ python ml/scrape_aicu.py \
 
 训练只读取 `text`、`uid`、`label` 和 `ctime`；不会把 UID 当作特征。正样本判定只看“账号 + 发布时间”，不按评论内容筛选。
 
+### 正常人类评论采集
+
+只靠黑名单账号的历史评论做负样本，UID 数量会偏少，模型容易记住作者风格。可以额外采集公开的正常评论：
+
+```bash
+python ml/scrape_human.py \
+  --videos 0 \
+  --aicu-hot \
+  --hot-users 10 \
+  --hot-pages 1 \
+  --out ml/data/human.jsonl
+```
+
+- `--videos N`：从正样本中出现过的 B 站视频页采集公开 DOM 评论，`0` 表示不采集视频页；
+- `--aicu-hot`：使用 aicu 热搜 UID 的公开评论作为正常样本；
+- 不会调用 `api.bilibili.com`，只读取浏览器页面或 aicu 的公开接口；
+- 输出 `human.jsonl`，全部标记 `label: 0`；
+- 已经存在于 `blacklist.json` / `revoked` 的 UID 会被排除。
+
 ## 训练
 
 ```bash
