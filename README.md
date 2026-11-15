@@ -171,10 +171,10 @@
 - 任意一条命中就自动屏蔽，计入“关键词”统计。
 - 本地白名单可以覆盖关键词误伤。
 
-默认只包含三个具体昵称词：
+默认包含以下具体昵称词（以 [keywords.json](keywords.json) 为准）：
 
 ```json
-"nameKeywords": ["dsh-agent", "dsh agent", "deepseek harness"]
+"nameKeywords": ["dsh-agent", "dsh agent", "deepseek harness", "肥鱼", "白饭"]
 ```
 
 `commentKeywords` 默认为空。默认不包含单独词“大肥鱼”，避免误伤昵称中带有这三个字的普通用户。
@@ -242,7 +242,7 @@
   "schemaVersion": 1,
   "version": 1,
   "updatedAt": "2026-11-15T00:00:00.000Z",
-  "nameKeywords": ["dsh-agent", "dsh agent", "deepseek harness"],
+  "nameKeywords": ["dsh-agent", "dsh agent", "deepseek harness", "肥鱼", "白饭"],
   "commentKeywords": []
 }
 ```
