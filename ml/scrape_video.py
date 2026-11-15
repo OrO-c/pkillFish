@@ -23,7 +23,9 @@ import configparser
 import hashlib
 import json
 import re
+import shutil
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -51,31 +53,49 @@ def parse_bv(value: str) -> str:
 
 
 def detect_firefox_profile() -> Path | None:
-    base = Path.home() / ".mozilla" / "firefox"
-    ini = base / "profiles.ini"
-    if not ini.exists():
-        return None
-    parser = configparser.ConfigParser()
-    try:
-        parser.read(ini)
-    except Exception:
-        return None
-    fallback = None
-    for section in parser.sections():
-        if not section.startswith("Profile"):
+    home = Path.home()
+    candidates = [
+        home / ".mozilla" / "firefox",
+        home / ".config" / "mozilla" / "firefox",
+        home / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
+    ]
+    for base in candidates:
+        ini = base / "profiles.ini"
+        if not ini.exists():
             continue
-        path = parser.get(section, "Path", fallback="")
-        if not path:
+        parser = configparser.ConfigParser()
+        try:
+            parser.read(ini)
+        except Exception:
             continue
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        if fallback is None:
-            fallback = candidate
-        if parser.get(section, "Default", fallback="0") == "1":
-            return candidate
-    return fallback
 
+        # Firefox 的 [Install...] 段记录“上次使用”的 profile，比 Default=1
+        # 更接近用户当前实际登录的 profile。
+        install_default = ""
+        for section in parser.sections():
+            if section.startswith("Install"):
+                install_default = parser.get(section, "Default", fallback="")
+                if install_default:
+                    break
+
+        fallback = None
+        for section in parser.sections():
+            if not section.startswith("Profile"):
+                continue
+            path = parser.get(section, "Path", fallback="")
+            if not path:
+                continue
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = base / candidate
+            if fallback is None:
+                fallback = candidate
+            if install_default and (candidate.name == install_default or path == install_default):
+                return candidate
+        if fallback:
+            return fallback
+    return None
 
 def load_positive_video_targets(
     path: Path,
@@ -325,18 +345,27 @@ def main() -> int:
     with sync_playwright() as playwright:
         context = None
         browser = None
+        temp_profile = None
         if profile:
+            # 不直接使用正在运行/被锁定的 Firefox profile，也不复制整个
+            # 数百 MB 的 profile：只取登录 cookies，放进临时 profile。
+            temp_profile = Path(tempfile.mkdtemp(prefix="pkillfish-ff-"))
+            for name in ("cookies.sqlite", "cookies.sqlite-wal", "cookies.sqlite-shm"):
+                source = profile / name
+                if source.exists():
+                    shutil.copy2(source, temp_profile / name)
             try:
                 context = playwright.firefox.launch_persistent_context(
-                    user_data_dir=str(profile),
+                    user_data_dir=str(temp_profile),
                     headless=not args.headful,
                     locale="zh-CN",
                     viewport={"width": 1366, "height": 900},
                 )
             except Exception as exc:
+                shutil.rmtree(temp_profile, ignore_errors=True)
                 log(
                     f"无法用已有 Firefox profile 启动：{exc}\n"
-                    "请先完全关闭 Firefox，或换一个 profile 目录；"
+                    "请确认 Firefox 已关闭，或使用 --profile-dir 指定正确的 profile；"
                     "不想使用已有数据时加 --no-profile。"
                 )
                 return 2
@@ -376,6 +405,8 @@ def main() -> int:
         context.close()
         if browser:
             browser.close()
+        if temp_profile:
+            shutil.rmtree(temp_profile, ignore_errors=True)
 
     log(f"完成：新增同视频负样本 {total} 条；输出 {out_path}")
     return 0 if total else 1
