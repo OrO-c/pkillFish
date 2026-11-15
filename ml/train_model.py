@@ -53,6 +53,7 @@ FORMAT = "pkillfish-ml-v1"
 FEATURE_VERSION = 1
 ROOT = Path(__file__).resolve().parents[1]
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+REPLY_PREFIX_RE = re.compile(r"^\s*回复\s*@[^\s:：]+\s*[:：]?\s*", re.IGNORECASE)
 MENTION_RE = re.compile(r"@[A-Za-z0-9_\-\u4e00-\u9fff]+")
 # 不让“模型名称”本身成为分类捷径；名称统一成 <model>，保留句式/风格特征。
 MODEL_TERM_RE = re.compile(
@@ -83,7 +84,8 @@ def normalize_text(value: Any) -> str:
     text = unicodedata.normalize("NFKC", text).lower()
     text = CTRL_RE.sub("", text)
     text = URL_RE.sub(" <url> ", text)
-    text = MENTION_RE.sub(" <mention> ", text)
+    text = REPLY_PREFIX_RE.sub("", text)
+    text = MENTION_RE.sub(" ", text)
     text = MODEL_TERM_RE.sub(" ", text)
     text = WS_RE.sub(" ", text).strip()
     return text[:4000]
@@ -464,7 +466,7 @@ def main() -> int:
 
     spec = {
         "version": FEATURE_VERSION,
-        "normalization": "nfkc-lower-url-mention-modelmask-v3",
+        "normalization": "nfkc-lower-url-mention-modelmask-v5",
         "featureNorm": "l2",
         "ngramMin": args.ngram_min,
         "ngramMax": args.ngram_max,
