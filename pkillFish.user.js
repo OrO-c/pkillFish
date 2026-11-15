@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.6
+// @version      1.5.7
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.6';
+  const VERSION = '1.5.7';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -96,6 +96,7 @@
   const MAX_BATCH_REPORTS = 10;
   const MAX_REPORT_QUEUE = 50;
   const ML_FORMAT = 'pkillfish-ml-v1';
+  const ML_NORMALIZATION = 'nfkc-lower-url-mention-modelmask-v2';
   const ML_MAX_BYTES = 2 * 1024 * 1024;
   const MID_RE = /^[1-9]\d{0,18}$/;
   const RPID_RE = /^[1-9]\d{0,18}$/;
@@ -312,6 +313,8 @@
 
   const ML_URL_RE = /https?:\/\/\S+|www\.\S+/gi;
   const ML_MENTION_RE = /@[A-Za-z0-9_\-\u4e00-\u9fff]+/g;
+  const ML_MODEL_TERM_RE =
+    /(?<![a-z0-9])(?:deepseek(?:\s*harness)?|dsh(?:-agent)?|openai|chatgpt|gpt(?:-?\d+(?:\.\d+)?)?(?:-?o)?|claude|gemini|qwen|llama|mistral|glm|chatglm|kimi|moonshot|minimax|anthropic|ai|agent|o[13](?![a-z0-9]))(?![a-z0-9])|大模型|生成式模型|人工智能|智能体|模型|通义千问|文心一言|豆包|混元|星火|百川/gi;
   const ML_EMOJI_RE =
     /[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/u;
   const ML_BULLET_RE = /(^|\n)\s*(?:[-*•]|\d+[.、)])\s+/;
@@ -329,6 +332,7 @@
     text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
     text = text.replace(ML_URL_RE, ' <url> ');
     text = text.replace(ML_MENTION_RE, ' <mention> ');
+    text = text.replace(ML_MODEL_TERM_RE, ' ');
     text = text.replace(/\s+/g, ' ').trim();
     return Array.from(text).slice(0, 4000).join('');
   }
@@ -1681,6 +1685,9 @@
       if (!parsed || parsed.format !== ML_FORMAT) throw new Error('模型格式不支持');
       const features = parsed.features;
       if (!isPlainObject(features)) throw new Error('缺少 features');
+      if (features.normalization && features.normalization !== ML_NORMALIZATION) {
+        throw new Error('模型版本与当前脚本不兼容，请重新训练/更新模型');
+      }
       const buckets = clampInt(features.buckets, 16, 262144, 0);
       if (!buckets) throw new Error('features.buckets 无效');
       if (typeof parsed.weights !== 'string') throw new Error('缺少权重');

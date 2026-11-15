@@ -54,6 +54,17 @@ FEATURE_VERSION = 1
 ROOT = Path(__file__).resolve().parents[1]
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 MENTION_RE = re.compile(r"@[A-Za-z0-9_\-\u4e00-\u9fff]+")
+# 不让“模型名称”本身成为分类捷径；名称统一成 <model>，保留句式/风格特征。
+MODEL_TERM_RE = re.compile(
+    r"(?<![a-z0-9])(?:"
+    r"deepseek(?:\s*harness)?|dsh(?:-agent)?|openai|chatgpt|"
+    r"gpt(?:-?\d+(?:\.\d+)?)?(?:-?o)?|claude|gemini|qwen|llama|"
+    r"mistral|glm|chatglm|kimi|moonshot|minimax|anthropic|"
+    r"ai|agent|o[13](?![a-z0-9])"
+    r")(?![a-z0-9])"
+    r"|大模型|生成式模型|人工智能|智能体|模型|通义千问|文心一言|豆包|混元|星火|百川",
+    re.IGNORECASE,
+)
 WS_RE = re.compile(r"\s+")
 CTRL_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]")
 EMOJI_RE = re.compile(
@@ -73,6 +84,7 @@ def normalize_text(value: Any) -> str:
     text = CTRL_RE.sub("", text)
     text = URL_RE.sub(" <url> ", text)
     text = MENTION_RE.sub(" <mention> ", text)
+    text = MODEL_TERM_RE.sub(" ", text)
     text = WS_RE.sub(" ", text).strip()
     return text[:4000]
 
@@ -180,12 +192,14 @@ def load_rows(paths: Iterable[Path], include_precut: bool = False) -> list[dict[
                 except (TypeError, ValueError):
                     weight = 1.0
                 weight = max(0.1, min(20.0, weight))
+                source = str(row.get("source") or "")
                 rows.append(
                     {
                         "text": text,
                         "uid": uid,
                         "label": label,
                         "weight": weight,
+                        "must_train": weight > 1.0 or source == "github-ml-false-positive",
                         "ctime": str(row.get("ctime") or ""),
                         "uname": str(row.get("uname") or ""),
                     }
@@ -233,10 +247,16 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
     for row in rows:
         by_group[row["uid"]].append(row)
     group_counts = {uid: len(items) for uid, items in by_group.items()}
+    hard_groups = {
+        row["uid"] for row in rows if row.get("must_train")
+    }
+    # 已审核的误判样本必须进入训练集，不能被随机分到测试/验证。
     negative_groups = [
         uid for uid, items in by_group.items() if any(row["label"] == 0 for row in items)
     ]
     positive_groups = [uid for uid in groups if uid not in set(negative_groups)]
+    negative_groups = [uid for uid in negative_groups if uid not in hard_groups]
+    positive_groups = [uid for uid in positive_groups if uid not in hard_groups]
     rng = np.random.default_rng(seed)
     rng.shuffle(negative_groups)
     rng.shuffle(positive_groups)
@@ -285,6 +305,7 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
         "testClasses": class_counts(test),
         "validClasses": class_counts(valid),
         "trainClasses": class_counts(train),
+        "forcedTrainGroups": len(hard_groups),
     }
     return train, valid, test, info
 
@@ -441,7 +462,7 @@ def main() -> int:
 
     spec = {
         "version": FEATURE_VERSION,
-        "normalization": "nfkc-lower-url-mention-ws",
+        "normalization": "nfkc-lower-url-mention-modelmask-v2",
         "ngramMin": args.ngram_min,
         "ngramMax": args.ngram_max,
         "buckets": args.buckets,
