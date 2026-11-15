@@ -4,7 +4,7 @@
 
 特点：
   - 支持使用已有 Firefox 用户数据（--profile-dir，或自动探测默认 profile）；
-  - 只需要给 BV 号；
+  - 只需要给 BV 号，或从正样本自动选“黑名单账号发言最多”的视频；
   - 读取公开页面 DOM，不调用 api.bilibili.com；
   - 排除当前 blacklist.json / revoked 中的 UID；
   - 输出 ml/data/same-video.jsonl，label=0，weight=2；
@@ -12,6 +12,7 @@
 
 用法：
   python ml/scrape_video.py --bv BV1xxxxxxxxx
+  python ml/scrape_video.py --from-positives ml/data/positives.jsonl --top-videos 30
   python ml/scrape_video.py --bv BV1xxxxxxxxx --profile-dir ~/.mozilla/firefox/xxxx.default-release --headful
 """
 
@@ -24,6 +25,7 @@ import json
 import re
 import sys
 import time
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,55 @@ def detect_firefox_profile() -> Path | None:
         if parser.get(section, "Default", fallback="0") == "1":
             return candidate
     return fallback
+
+
+def load_positive_video_targets(
+    path: Path,
+    blacklisted: set[str],
+    top: int,
+    rank_by: str,
+) -> list[dict[str, Any]]:
+    """从正样本中按黑名单账号的发言密度排序视频。"""
+    if not path.exists():
+        return []
+    comments: Counter[str] = Counter()
+    uids: dict[str, set[str]] = defaultdict(set)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        oid = str(row.get("oid") or "")
+        uid = str(row.get("uid") or "")
+        if not re.fullmatch(r"[1-9]\d{0,18}", oid):
+            continue
+        if uid not in blacklisted:
+            continue
+        comments[oid] += 1
+        uids[oid].add(uid)
+    ranked = sorted(
+        comments,
+        key=lambda oid: (
+            len(uids[oid]) if rank_by == "uids" else comments[oid],
+            comments[oid],
+            len(uids[oid]),
+        ),
+        reverse=True,
+    )
+    result = []
+    for oid in ranked[: max(1, top)]:
+        result.append(
+            {
+                "oid": oid,
+                "url": f"https://www.bilibili.com/video/av{oid}",
+                "video": f"av{oid}",
+                "comments": comments[oid],
+                "uids": len(uids[oid]),
+            }
+        )
+    return result
 
 
 def load_blacklisted(path: Path) -> set[str]:
@@ -211,7 +262,11 @@ def extract_comments(page: Any, bv: str, oid: str, blacklisted: set[str]) -> lis
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="从 BV 视频采集同领域正常评论")
-    parser.add_argument("--bv", action="append", required=True, help="BV 号或完整视频 URL，可重复/逗号分隔")
+    parser.add_argument("--bv", action="append", default=[], help="BV 号或完整视频 URL，可重复/逗号分隔")
+    parser.add_argument("--from-positives", default=str(Path(__file__).resolve().parent / "data" / "positives.jsonl"), help="从正样本自动选择视频")
+    parser.add_argument("--top-videos", type=int, default=30, help="自动选择发言最多的前 N 个视频")
+    parser.add_argument("--rank-by", choices=["comments", "uids"], default="comments", help="按评论条数或不同黑名单 UID 数排序")
+    parser.add_argument("--dry-run", action="store_true", help="只打印视频排序，不启动浏览器")
     parser.add_argument("--profile-dir", default="", help="Firefox 用户数据目录；留空自动探测默认 profile")
     parser.add_argument("--no-profile", action="store_true", help="不使用已有 Firefox 数据")
     parser.add_argument("--blacklist", default=str(ROOT / "blacklist.json"))
@@ -221,15 +276,34 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=60000)
     args = parser.parse_args()
 
-    bvs: list[str] = []
+    blacklisted = load_blacklisted(Path(args.blacklist))
+    targets: list[dict[str, Any]] = []
     for value in args.bv:
         for part in str(value).replace(",", " ").split():
             bv = parse_bv(part)
-            if bv and bv not in bvs:
-                bvs.append(bv)
-    if not bvs:
-        log("没有有效 BV 号")
+            if bv and all(item["video"] != bv for item in targets):
+                targets.append(
+                    {
+                        "oid": "",
+                        "url": f"https://www.bilibili.com/video/{bv}",
+                        "video": bv,
+                        "comments": 0,
+                        "uids": 0,
+                    }
+                )
+    if not targets:
+        targets = load_positive_video_targets(
+            Path(args.from_positives), blacklisted, args.top_videos, args.rank_by
+        )
+        if targets:
+            log(f"自动选择 {len(targets)} 个黑名单账号发言密集的视频：")
+            for item in targets:
+                log(f"  {item['video']}  comments={item['comments']} uids={item['uids']}")
+    if not targets:
+        log("没有有效 BV 号，也没有可用的正样本视频")
         return 2
+    if args.dry_run:
+        return 0
 
     profile = None
     if not args.no_profile:
@@ -242,7 +316,6 @@ def main() -> int:
     else:
         log("未找到 Firefox 用户数据，使用临时浏览器上下文（可能未登录）")
 
-    blacklisted = load_blacklisted(Path(args.blacklist))
     out_path = Path(args.out)
     existing = existing_keys(out_path)
 
@@ -273,13 +346,14 @@ def main() -> int:
             context = browser.new_context(locale="zh-CN", viewport={"width": 1366, "height": 900})
             page = context.new_page()
 
-        for index, bv in enumerate(bvs, 1):
-            url = f"https://www.bilibili.com/video/{bv}"
-            log(f"[{index}/{len(bvs)}] {url}")
+        for index, target in enumerate(targets, 1):
+            bv = target["video"]
+            url = target["url"]
+            log(f"[{index}/{len(targets)}] {url}")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=args.timeout_ms)
                 page.wait_for_timeout(5000)
-                oid = get_video_oid(page)
+                oid = get_video_oid(page) or target.get("oid") or ""
                 for _ in range(max(1, args.scrolls)):
                     page.mouse.wheel(0, 1600)
                     page.wait_for_timeout(900)

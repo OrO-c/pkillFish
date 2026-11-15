@@ -92,13 +92,25 @@ python ml/scrape_aicu.py \
 模型最容易学错的是“AI 科技区评论”而不是“大肥鱼风格”。最有效的负样本是同一视频、同一评论楼里的正常人类评论。
 
 ```bash
+# 自动从正样本中选黑名单账号发言最密集的视频
+python ml/scrape_video.py \
+  --from-positives ml/data/positives.jsonl \
+  --top-videos 30 \
+  --rank-by comments \
+  --profile-dir ~/.mozilla/firefox/xxxx.default-release \
+  --headful
+
+# 也可以手动指定 BV 号
 python ml/scrape_video.py \
   --bv BV1xxxxxxxxx \
   --profile-dir ~/.mozilla/firefox/xxxx.default-release \
   --headful
 ```
 
-- `--bv` 可以给完整 BV 号或视频 URL，可重复；
+- 不传 `--bv` 时，默认从 `ml/data/positives.jsonl` 中按**黑名单账号发言条数**选择视频；
+- `--rank-by uids` 可改为按不同黑名单 UID 数排序；
+- `--dry-run` 只打印排名，不启动浏览器；
+- `--bv` 可以手动给完整 BV 号或视频 URL，可重复；
 - `--profile-dir` 使用已有 Firefox 用户数据，保留登录态；
 - 不传 `--profile-dir` 时会尝试自动探测默认 profile；
 - 使用已有 profile 前请先关闭正在运行的 Firefox，否则 profile 可能被锁；
