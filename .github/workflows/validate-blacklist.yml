@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'blacklist.json'
+      - 'keywords.json'
       - 'scripts/**'
       - 'tests/**'
       - 'pkillFish.user.js'
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - 'blacklist.json'
+      - 'keywords.json'
       - 'scripts/**'
       - 'tests/**'
       - 'pkillFish.user.js'
@@ -38,6 +40,9 @@ jobs:
 
       - name: Validate blacklist
         run: node scripts/validate-blacklist.mjs blacklist.json
+
+      - name: Validate keywords
+        run: node scripts/validate-keywords.mjs keywords.json
 
       - name: Run unit tests
         run: node --test tests/*.test.mjs

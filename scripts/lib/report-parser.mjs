@@ -137,6 +137,8 @@ export function parseIssueBody(body) {
       const oid = cleanString(String(item.oid == null ? '' : item.oid), 20);
       const type = cleanString(String(item.type == null ? '' : item.type), 8);
       const link = normalizeBilibiliLink(item.link || '');
+      const uname = cleanString(String(item.uname == null ? '' : item.uname), 80);
+      const text = cleanString(String(item.text == null ? '' : item.text), 500);
 
       if (!MID_RE.test(mid)) {
         errors.push(`批量上报第 ${i + 1} 条 UID 无效`);
@@ -163,7 +165,7 @@ export function parseIssueBody(body) {
         continue;
       }
       seen.add(mid);
-      reports.push({ uid: mid, mid, rpid, oid, type, link });
+      reports.push({ uid: mid, mid, rpid, oid, type, link, uname, text });
     }
 
     if (!reports.length) {
@@ -228,6 +230,9 @@ export function parseIssueBody(body) {
   if (type && !/^\d{1,3}$/.test(type)) errors.push('type 格式无效');
   if (!link) errors.push('缺少合法的 B 站评论链接');
 
+  const unameMatch = raw.match(/(?:^|\n)\s*-?\s*昵称\s*[:：]\s*([^\n]+)/);
+  const uname = unameMatch ? cleanString(unameMatch[1], 80) : '';
+
   const commentText = extractCommentText(raw);
   if (isPlaceholderComment(commentText)) {
     errors.push('缺少评论原文');
@@ -239,7 +244,9 @@ export function parseIssueBody(body) {
     rpid,
     oid,
     type,
-    link
+    link,
+    uname,
+    text: commentText
   };
 
   return {

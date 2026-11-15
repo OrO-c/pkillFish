@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.2.1
+// @version      1.3.0
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,17 +60,21 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.2.1';
+  const VERSION = '1.3.0';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
   const DEFAULT_BLACKLIST_URL =
     'https://raw.githubusercontent.com/' + DEFAULT_REPORT_REPO + '/main/blacklist.json';
+  const DEFAULT_KEYWORDS_URL =
+    'https://raw.githubusercontent.com/' + DEFAULT_REPORT_REPO + '/main/keywords.json';
 
   const STORAGE = {
     state: 'pf:v1:state',
     blacklist: 'pf:v1:blacklist',
-    blacklistMeta: 'pf:v1:blacklist-meta'
+    blacklistMeta: 'pf:v1:blacklist-meta',
+    keywords: 'pf:v1:keywords',
+    keywordsMeta: 'pf:v1:keywords-meta'
   };
 
   const LIMITS = {
@@ -96,6 +100,8 @@
     enabled: true,
     rulesEnabled: true,
     keywordRulesEnabled: false,
+    keywordBlockEnabled: true,
+    keywordUrl: '',
     offline: false,
     reportEnabled: true,
     debug: false,
@@ -581,6 +587,25 @@
     updating: false
   };
 
+  let keywordDoc = {
+    schemaVersion: 1,
+    version: 0,
+    updatedAt: '',
+    nameKeywords: [],
+    commentKeywords: []
+  };
+  let keywordMeta = {
+    etag: '',
+    checkedAt: 0,
+    fetchedAt: 0,
+    version: 0,
+    count: 0,
+    error: '',
+    updating: false
+  };
+  let keywordNameList = [];
+  let keywordCommentList = [];
+
   let whitelistSets = { mids: new Set(), rpids: new Set(), fingerprints: new Set() };
   let keywordList = [];
   let avatarList = [];
@@ -613,7 +638,7 @@
   let filterSortExitBound = new WeakSet();
   let filterHeaderRetry = new WeakMap();
   let filterMasks = new Map();
-  let pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
+  let pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0 };
 
   let burstTracker = new Map();
   let templateTracker = new Map();
@@ -632,7 +657,7 @@
       schema: 1,
       settings: defaultSettings(),
       whitelist: { mids: [], rpids: [], fingerprints: [] },
-      stats: { total: 0, blacklist: 0, rules: 0, model: 0, byDay: {} },
+      stats: { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} },
       log: [],
       reportQueue: [],
       migrations: {
@@ -676,6 +701,7 @@
       'enabled',
       'rulesEnabled',
       'keywordRulesEnabled',
+      'keywordBlockEnabled',
       'offline',
       'reportEnabled',
       'debug',
@@ -689,6 +715,7 @@
     const repo = cleanText(input.reportRepo, 140, false);
     out.reportRepo = normalizeRepo(repo) || def.reportRepo;
     out.blacklistUrl = cleanText(input.blacklistUrl, 500, false);
+    out.keywordUrl = cleanText(input.keywordUrl, 500, false);
     out.updateIntervalHours = clampNumber(
       input.updateIntervalHours,
       0.25,
@@ -744,10 +771,11 @@
   }
 
   function sanitizeStats(input) {
-    const out = { total: 0, blacklist: 0, rules: 0, model: 0, byDay: {} };
+    const out = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} };
     if (!isPlainObject(input)) return out;
     out.total = clampInt(input.total, 0, 1000000000, 0);
     out.blacklist = clampInt(input.blacklist, 0, 1000000000, 0);
+    out.keyword = clampInt(input.keyword, 0, 1000000000, 0);
     out.rules = clampInt(input.rules, 0, 1000000000, 0);
     out.model = clampInt(input.model, 0, 1000000000, 0);
     if (isPlainObject(input.byDay)) {
@@ -774,9 +802,13 @@
     for (let i = 0; i < input.length && out.length < LIMITS.maxLog; i += 1) {
       const r = input[i];
       if (!isPlainObject(r)) continue;
-      const reason = r.reason === 'blacklist' || r.reason === 'rules' || r.reason === 'model'
-        ? r.reason
-        : 'rules';
+      const reason =
+        r.reason === 'blacklist' ||
+        r.reason === 'keyword' ||
+        r.reason === 'rules' ||
+        r.reason === 'model'
+          ? r.reason
+          : 'rules';
       out.push({
         id: cleanText(r.id, 40, false) || 'legacy-' + i,
         ts: clampInt(r.ts, 0, 9999999999999, 0),
@@ -1280,6 +1312,197 @@
   }
 
   /* ==========================================================================
+   * 独立关键词规则：keywords.json
+   *
+   * 与 UID 黑名单完全分离：
+   *   - nameKeywords：命中昵称即自动屏蔽
+   *   - commentKeywords：命中评论正文即自动屏蔽
+   * 被自动屏蔽的评论不注入“上报可疑鱼”按钮；如果用户强行提交 Issue，
+   * workflow 会用仓库里的 keywords.json 再检查一次，命中则拒绝。
+   * ========================================================================== */
+
+  function emptyKeywordDoc() {
+    return {
+      schemaVersion: 1,
+      version: 0,
+      updatedAt: '',
+      nameKeywords: [],
+      commentKeywords: []
+    };
+  }
+
+  function normalizeKeywordDoc(input) {
+    const out = emptyKeywordDoc();
+    if (!isPlainObject(input)) return out;
+    out.version = clampInt(input.version, 0, 1000000000, 0);
+    out.updatedAt = isIsoDate(input.updatedAt) ? new Date(input.updatedAt).toISOString() : '';
+    out.nameKeywords = sanitizeStringArray(input.nameKeywords, 500, 40);
+    out.commentKeywords = sanitizeStringArray(input.commentKeywords, 500, 40);
+    return out;
+  }
+
+  function rebuildKeywordIndex() {
+    keywordNameList = (keywordDoc.nameKeywords || [])
+      .map(function (keyword) {
+        return normalizeForMatch(keyword);
+      })
+      .filter(Boolean);
+    keywordCommentList = (keywordDoc.commentKeywords || [])
+      .map(function (keyword) {
+        return normalizeForMatch(keyword);
+      })
+      .filter(Boolean);
+  }
+
+  function matchKeyword(candidate) {
+    if (!candidate || !settings.keywordBlockEnabled) return null;
+
+    if (candidate.uname) {
+      const uname = normalizeForMatch(candidate.uname);
+      for (let i = 0; i < keywordNameList.length; i += 1) {
+        const keyword = keywordNameList[i];
+        if (keyword && uname.indexOf(keyword) !== -1) {
+          return { kind: 'name', keyword: keyword };
+        }
+      }
+    }
+
+    if (candidate.text) {
+      const text = normalizeForMatch(candidate.text);
+      for (let i = 0; i < keywordCommentList.length; i += 1) {
+        const keyword = keywordCommentList[i];
+        if (keyword && text.indexOf(keyword) !== -1) {
+          return { kind: 'comment', keyword: keyword };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function loadKeywordCache() {
+    const cached = safeJsonParse(gmGet(STORAGE.keywords, null));
+    if (cached) {
+      keywordDoc = normalizeKeywordDoc(cached);
+    }
+    const meta = safeJsonParse(gmGet(STORAGE.keywordsMeta, null));
+    if (isPlainObject(meta)) {
+      keywordMeta.etag = cleanText(meta.etag, 300, false);
+      keywordMeta.checkedAt = clampInt(meta.checkedAt, 0, 9999999999999, 0);
+      keywordMeta.fetchedAt = clampInt(meta.fetchedAt, 0, 9999999999999, 0);
+      keywordMeta.error = cleanText(meta.error, 200, false);
+    }
+    keywordMeta.version = keywordDoc.version;
+    keywordMeta.count = keywordDoc.nameKeywords.length + keywordDoc.commentKeywords.length;
+    rebuildKeywordIndex();
+    debug('keywords loaded', {
+      names: keywordDoc.nameKeywords.length,
+      comments: keywordDoc.commentKeywords.length
+    });
+  }
+
+  function persistKeywordCache() {
+    gmSet(STORAGE.keywords, JSON.stringify(keywordDoc));
+    gmSet(
+      STORAGE.keywordsMeta,
+      JSON.stringify({
+        etag: keywordMeta.etag,
+        checkedAt: keywordMeta.checkedAt,
+        fetchedAt: keywordMeta.fetchedAt,
+        error: keywordMeta.error
+      })
+    );
+  }
+
+  async function updateKeywords(force) {
+    if (!settings) return;
+    if (settings.offline) return;
+    if (keywordMeta.updating) return;
+
+    const intervalMs = settings.updateIntervalHours * 3600 * 1000;
+    if (
+      !force &&
+      keywordMeta.checkedAt > 0 &&
+      Date.now() - keywordMeta.checkedAt < intervalMs
+    ) {
+      return;
+    }
+
+    const url = (settings.keywordUrl || DEFAULT_KEYWORDS_URL).trim();
+    if (!isHttpsUrl(url)) {
+      keywordMeta.error = '关键词地址必须是 https URL';
+      keywordMeta.checkedAt = Date.now();
+      persistKeywordCache();
+      refreshUI();
+      return;
+    }
+
+    keywordMeta.updating = true;
+    keywordMeta.error = '';
+    refreshUI();
+
+    try {
+      const headers = {
+        Accept: 'application/json, text/plain, */*',
+        'Cache-Control': 'no-cache'
+      };
+      if (keywordMeta.etag) headers['If-None-Match'] = keywordMeta.etag;
+
+      const res = await xhrGet(url, headers);
+      keywordMeta.checkedAt = Date.now();
+
+      if (settings.offline) return;
+      if (res.status === 304) {
+        keywordMeta.error = '';
+        persistKeywordCache();
+        refreshUI();
+        return;
+      }
+      if (res.status !== 200) throw new Error('关键词请求返回 HTTP ' + res.status);
+      if (String(res.text).length > 2 * 1024 * 1024) {
+        throw new Error('关键词文件超过 2MB 上限');
+      }
+
+      const parsed = safeJsonParse(res.text);
+      if (!parsed || !isPlainObject(parsed)) throw new Error('关键词不是合法 JSON 对象');
+      const next = normalizeKeywordDoc(parsed);
+
+      keywordDoc = next;
+      keywordMeta.version = next.version;
+      keywordMeta.count = next.nameKeywords.length + next.commentKeywords.length;
+      keywordMeta.etag = parseEtag(res.headers) || keywordMeta.etag;
+      keywordMeta.fetchedAt = Date.now();
+      keywordMeta.error = '';
+      rebuildKeywordIndex();
+      persistKeywordCache();
+
+      if (active && settings.enabled) rescanCandidates();
+      refreshUI();
+      setNotice(
+        '关键词规则已更新：昵称 ' +
+          next.nameKeywords.length +
+          ' 条，评论 ' +
+          next.commentKeywords.length +
+          ' 条。'
+      );
+    } catch (err) {
+      keywordMeta.error = truncate(err && err.message ? err.message : String(err), 180);
+      keywordMeta.checkedAt = Date.now();
+      persistKeywordCache();
+      setNotice('关键词更新失败：' + keywordMeta.error, true);
+      debug('keywords update failed', err);
+    } finally {
+      keywordMeta.updating = false;
+      persistKeywordCache();
+      refreshUI();
+    }
+  }
+
+  async function updateAll(force) {
+    await Promise.all([updateBlacklist(force), updateKeywords(force)]);
+  }
+
+  /* ==========================================================================
    * 规则匹配（黑名单优先，其后才是启发式规则）
    * ========================================================================== */
 
@@ -1499,6 +1722,19 @@
           score: 99
         };
       }
+    }
+
+    const keywordHit = matchKeyword(candidate);
+    if (keywordHit) {
+      return {
+        block: true,
+        reason: 'keyword',
+        detail:
+          (keywordHit.kind === 'name' ? '昵称' : '评论') +
+          '关键词：' +
+          keywordHit.keyword,
+        score: 99
+      };
     }
 
     if (settings.rulesEnabled) {
@@ -1821,7 +2057,14 @@
   }
 
   function bumpStat(reason) {
-    const key = reason === 'blacklist' ? 'blacklist' : reason === 'model' ? 'model' : 'rules';
+    const key =
+      reason === 'blacklist'
+        ? 'blacklist'
+        : reason === 'keyword'
+          ? 'keyword'
+          : reason === 'model'
+            ? 'model'
+            : 'rules';
     state.stats.total += 1;
     state.stats[key] = (state.stats[key] || 0) + 1;
     const day = todayKey();
@@ -1865,6 +2108,8 @@
     if (!stored.length) return false;
 
     candidate.hidden = true;
+    removeReportButtonFor(candidate);
+    removeQueuedReportFor(candidate);
     const fp = candidate.fp || fingerprintOf(candidate);
     candidate.fp = fp;
 
@@ -1974,6 +2219,7 @@
     if (candidate) {
       candidate.hidden = false;
       candidate.restored = true;
+      injectReportButton(candidate);
     }
 
     if (mode === 'mid') {
@@ -2002,6 +2248,7 @@
       if (candidate) {
         candidate.hidden = false;
         candidate.restored = true;
+        injectReportButton(candidate);
       }
       restored += 1;
     }
@@ -2154,6 +2401,44 @@
     if (!ok) setNotice('浏览器拦截了新标签页，请允许弹窗后重试。', true);
   }
 
+  function removeReportButtonFor(candidate) {
+    if (!candidate) return;
+    const button = candidate.reportBtn;
+    if (button) {
+      try {
+        if (button.parentNode) button.parentNode.removeChild(button);
+      } catch (_) {
+        /* ignore */
+      }
+      reportButtons.delete(button);
+    }
+    try {
+      reportHosts.delete(candidate.el);
+    } catch (_) {
+      /* ignore */
+    }
+    candidate.reportBtn = null;
+  }
+
+  function removeQueuedReportFor(candidate) {
+    if (!candidate || !state) return;
+    const key =
+      candidate.mid +
+      '|' +
+      (digitsOnly(candidate.rpid) ||
+        candidate.fp ||
+        fingerprintOf(candidate));
+    const before = state.reportQueue.length;
+    state.reportQueue = state.reportQueue.filter(function (item) {
+      return item.key !== key;
+    });
+    if (state.reportQueue.length !== before) {
+      saveState();
+      renderReportQueue();
+      setQueueNotice('该评论已被自动屏蔽，已从待上报列表移除。');
+    }
+  }
+
   function injectReportButton(candidate) {
     if (!settings.reportEnabled || !candidate || !candidate.el || candidate.hidden) return;
     if (!candidate.el.isConnected) return;
@@ -2249,15 +2534,22 @@
       const old = candidateList.shift();
       candidates.delete(old);
     }
-    injectReportButton(candidate);
-    scheduleFilterRefresh();
-
-    if (!settings.enabled) return;
-    const decision = evaluate(candidate);
-    if (decision && decision.block) {
-      hideCandidate(candidate, decision);
+    if (!settings.enabled) {
+      injectReportButton(candidate);
+      scheduleFilterRefresh();
       return;
     }
+
+    const decision = evaluate(candidate);
+    if (decision && decision.block) {
+      // 自动屏蔽的评论不提供上报按钮，也不进入待上报队列。
+      hideCandidate(candidate, decision);
+      scheduleFilterRefresh();
+      return;
+    }
+
+    injectReportButton(candidate);
+    scheduleFilterRefresh();
     if (settings.enableLocalModel) queueModel(candidate);
   }
 
@@ -3430,11 +3722,14 @@
         <section data-pane="status">
           <div class="pf-kv"><span>拦截总数</span><span id="pf-st-total">0</span></div>
           <div class="pf-kv"><span>其中黑名单</span><span id="pf-st-blacklist">0</span></div>
+          <div class="pf-kv"><span>其中关键词</span><span id="pf-st-keyword">0</span></div>
           <div class="pf-kv"><span>其中规则</span><span id="pf-st-rules">0</span></div>
           <div class="pf-kv"><span>其中本地模型</span><span id="pf-st-model">0</span></div>
           <div class="pf-kv"><span>本次页面</span><span id="pf-st-page">0</span></div>
           <div class="pf-kv"><span>今日</span><span id="pf-st-today">0</span></div>
           <div class="pf-kv"><span>黑名单条目</span><span id="pf-st-blcount">0</span></div>
+          <div class="pf-kv"><span>关键词条目</span><span id="pf-st-kwcount">0</span></div>
+          <div class="pf-kv"><span>关键词更新时间</span><span id="pf-st-kwupdated">从未更新</span></div>
           <div class="pf-kv"><span>黑名单版本</span><span id="pf-st-version">0</span></div>
           <div class="pf-kv"><span>最后更新</span><span id="pf-st-updated">从未更新</span></div>
           <div class="pf-kv"><span>白名单</span><span id="pf-st-whitelist">0</span></div>
@@ -3453,6 +3748,7 @@
           <label class="pf-check"><input type="checkbox" id="pf-enabled"> 启用屏蔽</label>
           <label class="pf-check"><input type="checkbox" id="pf-rules"> 启用规则扫描</label>
           <label class="pf-check"><input type="checkbox" id="pf-keyword-rules"> 启用关键词规则（昵称/话术，当前默认关闭）</label>
+          <label class="pf-check"><input type="checkbox" id="pf-keyword-block"> 启用独立关键词屏蔽（keywords.json）</label>
           <label class="pf-check"><input type="checkbox" id="pf-offline"> 离线模式（不拉取远端黑名单）</label>
           <label class="pf-check"><input type="checkbox" id="pf-report"> 显示“上报可疑鱼”按钮</label>
           <label class="pf-check"><input type="checkbox" id="pf-debug"> 调试日志（仅输出到控制台）</label>
@@ -3467,6 +3763,10 @@
           <div class="pf-row">
             <label for="pf-bl-url">黑名单地址</label>
             <input id="pf-bl-url" type="text" spellcheck="false" placeholder="留空使用项目默认地址">
+          </div>
+          <div class="pf-row">
+            <label for="pf-kw-url">关键词地址</label>
+            <input id="pf-kw-url" type="text" spellcheck="false" placeholder="留空使用项目默认 keywords.json">
           </div>
           <div class="pf-row">
             <label for="pf-interval">更新间隔</label>
@@ -3585,11 +3885,14 @@
       updateState: shadow.querySelector('#pf-update-state'),
       stTotal: shadow.querySelector('#pf-st-total'),
       stBlacklist: shadow.querySelector('#pf-st-blacklist'),
+      stKeyword: shadow.querySelector('#pf-st-keyword'),
       stRules: shadow.querySelector('#pf-st-rules'),
       stModel: shadow.querySelector('#pf-st-model'),
       stPage: shadow.querySelector('#pf-st-page'),
       stToday: shadow.querySelector('#pf-st-today'),
       stBlCount: shadow.querySelector('#pf-st-blcount'),
+      stKwCount: shadow.querySelector('#pf-st-kwcount'),
+      stKwUpdated: shadow.querySelector('#pf-st-kwupdated'),
       stVersion: shadow.querySelector('#pf-st-version'),
       stUpdated: shadow.querySelector('#pf-st-updated'),
       stWhitelist: shadow.querySelector('#pf-st-whitelist'),
@@ -3597,12 +3900,14 @@
       enabled: shadow.querySelector('#pf-enabled'),
       rules: shadow.querySelector('#pf-rules'),
       keywordRules: shadow.querySelector('#pf-keyword-rules'),
+      keywordBlock: shadow.querySelector('#pf-keyword-block'),
       offline: shadow.querySelector('#pf-offline'),
       report: shadow.querySelector('#pf-report'),
       debug: shadow.querySelector('#pf-debug'),
       model: shadow.querySelector('#pf-model'),
       repo: shadow.querySelector('#pf-repo'),
       blUrl: shadow.querySelector('#pf-bl-url'),
+      kwUrl: shadow.querySelector('#pf-kw-url'),
       interval: shadow.querySelector('#pf-interval'),
       threshold: shadow.querySelector('#pf-threshold'),
       burstCount: shadow.querySelector('#pf-burst-count'),
@@ -3653,6 +3958,7 @@
       ui.enabled,
       ui.rules,
       ui.keywordRules,
+      ui.keywordBlock,
       ui.offline,
       ui.report,
       ui.debug,
@@ -3667,6 +3973,7 @@
     const textRefs = [
       ui.repo,
       ui.blUrl,
+      ui.kwUrl,
       ui.interval,
       ui.threshold,
       ui.burstCount,
@@ -3682,7 +3989,7 @@
     }
 
     ui.update.addEventListener('click', function () {
-      updateBlacklist(true);
+      updateAll(true);
     });
 
     ui.save.addEventListener('click', function () {
@@ -3703,8 +4010,8 @@
 
     ui.clearStats.addEventListener('click', function () {
       if (!window.confirm('清空统计计数？日志与屏蔽状态不受影响。')) return;
-      state.stats = { total: 0, blacklist: 0, rules: 0, model: 0, byDay: {} };
-      pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
+      state.stats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0, byDay: {} };
+      pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0 };
       saveState(true);
       refreshUI();
       setNotice('统计已清空。');
@@ -3846,11 +4153,20 @@
     if (!ui || !state) return;
     ui.stTotal.textContent = String(state.stats.total);
     ui.stBlacklist.textContent = String(state.stats.blacklist);
+    ui.stKeyword.textContent = String(state.stats.keyword || 0);
     ui.stRules.textContent = String(state.stats.rules);
     ui.stModel.textContent = String(state.stats.model);
     ui.stPage.textContent = String(pageStats.total);
     ui.stToday.textContent = String(state.stats.byDay[todayKey()] || 0);
     ui.stBlCount.textContent = String(blacklistDoc.entries.length);
+    ui.stKwCount.textContent = String(
+      (keywordDoc.nameKeywords || []).length + (keywordDoc.commentKeywords || []).length
+    );
+    ui.stKwUpdated.textContent = keywordMeta.fetchedAt
+      ? formatTime(keywordMeta.fetchedAt)
+      : keywordDoc.updatedAt
+        ? '缓存 ' + formatTime(Date.parse(keywordDoc.updatedAt))
+        : '从未更新';
     ui.stVersion.textContent = String(blacklistDoc.version || 0);
     ui.stUpdated.textContent = blacklistMeta.fetchedAt
       ? formatTime(blacklistMeta.fetchedAt)
@@ -3865,20 +4181,24 @@
     ui.stWhitelist.textContent = String(wlCount);
 
     let stateText = '就绪';
-    if (blacklistMeta.updating) stateText = '更新中';
+    if (blacklistMeta.updating || keywordMeta.updating) stateText = '更新中';
     else if (settings.offline) stateText = '离线模式';
-    else if (blacklistMeta.error) stateText = '上次更新失败';
+    else if (blacklistMeta.error || keywordMeta.error) stateText = '上次更新失败';
     else if (!blacklistDoc.entries.length) stateText = '使用本地缓存（空）';
     ui.stState.textContent = stateText;
 
-    ui.update.disabled = blacklistMeta.updating || settings.offline;
-    ui.update.textContent = blacklistMeta.updating ? '更新中' : '更新黑名单';
-    ui.updateState.textContent = blacklistMeta.error
-      ? truncate(blacklistMeta.error, 80)
+    ui.update.disabled =
+      blacklistMeta.updating || keywordMeta.updating || settings.offline;
+    ui.update.textContent =
+      blacklistMeta.updating || keywordMeta.updating ? '更新中' : '更新黑名单/关键词';
+    const updateError = blacklistMeta.error || keywordMeta.error;
+    ui.updateState.textContent = updateError
+      ? truncate(updateError, 80)
       : settings.offline
         ? '离线模式：不联网'
-        : blacklistMeta.checkedAt
-          ? '上次检查 ' + formatTime(blacklistMeta.checkedAt)
+        : blacklistMeta.checkedAt || keywordMeta.checkedAt
+          ? '上次检查 ' +
+            formatTime(Math.max(blacklistMeta.checkedAt, keywordMeta.checkedAt))
           : '尚未检查';
 
     if (ui.notice) {
@@ -3892,6 +4212,7 @@
     ui.enabled.checked = !!settings.enabled;
     ui.rules.checked = !!settings.rulesEnabled;
     ui.keywordRules.checked = !!settings.keywordRulesEnabled;
+    ui.keywordBlock.checked = !!settings.keywordBlockEnabled;
     ui.offline.checked = !!settings.offline;
     ui.report.checked = !!settings.reportEnabled;
     ui.debug.checked = !!settings.debug;
@@ -3899,6 +4220,7 @@
 
     ui.repo.value = settings.reportRepo || '';
     ui.blUrl.value = settings.blacklistUrl || '';
+    ui.kwUrl.value = settings.keywordUrl || '';
     ui.interval.value = String(settings.updateIntervalHours);
     ui.threshold.value = String(settings.threshold);
     ui.burstCount.value = String(settings.burst.count);
@@ -3918,6 +4240,7 @@
     return JSON.stringify({
       rulesEnabled: settings.rulesEnabled,
       keywordRulesEnabled: settings.keywordRulesEnabled,
+      keywordBlockEnabled: settings.keywordBlockEnabled,
       threshold: settings.threshold,
       weights: settings.weights,
       burst: settings.burst,
@@ -3937,6 +4260,7 @@
     settings.enabled = !!ui.enabled.checked;
     settings.rulesEnabled = !!ui.rules.checked;
     settings.keywordRulesEnabled = !!ui.keywordRules.checked;
+    settings.keywordBlockEnabled = !!ui.keywordBlock.checked;
     settings.offline = !!ui.offline.checked;
     settings.reportEnabled = !!ui.report.checked;
     settings.debug = !!ui.debug.checked;
@@ -3950,6 +4274,7 @@
       settings.reportRepo = repoNormalized || DEFAULT_REPORT_REPO;
     }
     settings.blacklistUrl = cleanText(ui.blUrl.value, 500, false);
+    settings.keywordUrl = cleanText(ui.kwUrl.value, 500, false);
     settings.updateIntervalHours = clampNumber(
       parseFloat(ui.interval.value),
       0.25,
@@ -4063,6 +4388,7 @@
           if (candidate) {
             candidate.hidden = false;
             candidate.restored = true;
+            injectReportButton(candidate);
           }
           restored += 1;
         }
@@ -4249,13 +4575,21 @@
       return { error: '一次最多提交 ' + MAX_BATCH_REPORTS + ' 条，请减少勾选。' };
     }
 
+    const safeMetaText = function (value, max) {
+      return cleanText(value || '', max, false)
+        .replace(/-->/g, '-- >')
+        .replace(/<!--/g, '< !--');
+    };
+
     const reports = items.map(function (item) {
       return {
         mid: digitsOnly(item.mid),
         rpid: digitsOnly(item.rpid),
         oid: digitsOnly(item.oid),
         type: digitsOnly(item.type),
-        link: item.link
+        link: item.link,
+        uname: safeMetaText(item.uname, 80),
+        text: safeMetaText(item.text, 50)
       };
     });
     if (
@@ -4395,9 +4729,11 @@
       const reasonLabel =
         record.reason === 'blacklist'
           ? '黑名单'
-          : record.reason === 'model'
-            ? '本地模型'
-            : '规则';
+          : record.reason === 'keyword'
+            ? '关键词'
+            : record.reason === 'model'
+              ? '本地模型'
+              : '规则';
       meta.textContent =
         formatTime(record.ts) +
         ' · UID ' +
@@ -4495,7 +4831,7 @@
     reportButtons = new Set();
     nodeMap = new Map();
     recordCandidates = new Map();
-    pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
+    pageStats = { total: 0, blacklist: 0, keyword: 0, rules: 0, model: 0 };
     resetRuleTrackers();
     pendingRoots.clear();
     if (scanTimer) {
@@ -4521,7 +4857,7 @@
 
     if (!settings.offline) {
       setTimeout(function () {
-        if (active) updateBlacklist(false);
+        if (active) updateAll(false);
       }, 2500);
     }
     debug('started on', location.href);
@@ -4613,6 +4949,7 @@
         return {
           total: state.stats.total,
           blacklist: state.stats.blacklist,
+          keyword: state.stats.keyword,
           rules: state.stats.rules,
           model: state.stats.model,
           page: pageStats.total
@@ -4642,7 +4979,10 @@
         restoreByMid(digitsOnly(mid));
       },
       refreshBlacklist: function () {
-        return updateBlacklist(true);
+        return updateAll(true);
+      },
+      refreshKeywords: function () {
+        return updateKeywords(true);
       },
       openPanel: openPanel,
       _internals: {
@@ -4679,6 +5019,7 @@
     try {
       loadState();
       loadBlacklistCache();
+      loadKeywordCache();
       rebuildRules();
       rebuildWhitelistSets();
       registerMenuCommands();
@@ -4688,7 +5029,7 @@
       // 长时间挂页时按设置间隔检查黑名单；updateBlacklist 内部会做 due 判断。
       setInterval(function () {
         if (active && !settings.offline && !blacklistMeta.updating) {
-          updateBlacklist(false);
+          updateAll(false);
         }
       }, 5 * 60 * 1000);
 

@@ -7,11 +7,12 @@
  *
  * 行为：
  *   1. 严格解析 Issue 正文中的 pkillfish:meta（单条）或 pkillfish:batch（批量）区块；
- *   2. 二次校验现有 blacklist.json；
- *   3. 新 UID 追加条目；已有 UID 只补充 reports 证据；
- *   4. 再次校验后原子写入；
- *   5. 新条目写入变更日志；
- *   6. 输出 changed / mid / mids / action / count / added / reported / duplicate 给 workflow。
+ *   2. 读取 keywords.json，拒绝命中当前自动关键词规则的强行上报；
+ *   3. 二次校验现有 blacklist.json；
+ *   4. 新 UID 追加条目；已有 UID 只补充 reports 证据；
+ *   5. 再次校验后原子写入；
+ *   6. 新条目写入变更日志；
+ *   7. 输出 changed / mid / mids / action / count / added / reported / duplicate 给 workflow。
  *
  * 不访问网络，不调用 B 站 API，不执行 Issue 中的任何代码。
  */
@@ -26,9 +27,11 @@ import {
   validateBlacklist
 } from './lib/blacklist.mjs';
 import { parseIssueBody, reasonFromIssue } from './lib/report-parser.mjs';
+import { matchKeywords, validateKeywords } from './lib/keywords.mjs';
 
 const BLACKLIST_FILE = process.env.BLACKLIST_FILE || 'blacklist.json';
 const CHANGELOG_FILE = process.env.CHANGELOG_FILE || 'docs/blacklist-changelog.md';
+const KEYWORDS_FILE = process.env.KEYWORDS_FILE || 'keywords.json';
 const issueNumber = Number(process.env.ISSUE_NUMBER || 0);
 const issueTitle = process.env.ISSUE_TITLE || '';
 const issueBody = process.env.ISSUE_BODY || '';
@@ -138,6 +141,37 @@ function main() {
   const validation = validateBlacklist(readJson(BLACKLIST_FILE));
   if (!validation.ok) {
     fail(`现有黑名单校验失败：${validation.errors.join('；')}`);
+  }
+
+  const keywordValidation = validateKeywords(readJson(KEYWORDS_FILE));
+  if (!keywordValidation.ok) {
+    fail(`关键词文件校验失败：${keywordValidation.errors.join('；')}`);
+  }
+  const keywordDoc = keywordValidation.doc;
+  for (const report of reports) {
+    if (
+      keywordDoc.nameKeywords.length > 0 &&
+      !String(report.uname || '').trim()
+    ) {
+      fail(`UID ${report.mid} 缺少昵称，无法检查关键词规则`);
+    }
+    if (
+      keywordDoc.commentKeywords.length > 0 &&
+      !String(report.text || '').trim()
+    ) {
+      fail(`UID ${report.mid} 缺少评论内容，无法检查关键词规则`);
+    }
+    const keywordHit = matchKeywords(keywordDoc, {
+      uname: report.uname || '',
+      text: report.text || ''
+    });
+    if (keywordHit) {
+      fail(
+        `UID ${report.mid} 命中关键词规则（` +
+          (keywordHit.kind === 'name' ? '昵称' : '评论') +
+          `：${keywordHit.keyword}），拒绝加入 UID 黑名单`
+      );
+    }
   }
 
   const doc = validation.doc;

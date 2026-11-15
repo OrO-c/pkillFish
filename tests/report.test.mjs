@@ -133,7 +133,9 @@ test('解析批量 pkillfish:batch', () => {
       rpid: '111',
       oid: '999',
       type: '1',
-      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply111'
+      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply111',
+      uname: 'fish-one',
+      text: '评论正文'
     },
     {
       mid: '987654321',
@@ -147,6 +149,8 @@ test('解析批量 pkillfish:batch', () => {
   assert.equal(parsed.ok, true, parsed.errors.join('\n'));
   assert.equal(parsed.reports.length, 2);
   assert.equal(parsed.reports[0].mid, '123456789');
+  assert.equal(parsed.reports[0].uname, 'fish-one');
+  assert.equal(parsed.reports[0].text, '评论正文');
   assert.equal(parsed.reports[1].mid, '987654321');
   assert.equal(parseBatchBlock(body).length, 2);
 });

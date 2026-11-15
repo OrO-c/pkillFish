@@ -240,6 +240,7 @@ jobs:
               '- Issue 正文缺少 `pkillfish:meta` 或 `pkillfish:batch` 区块，或 UID / 链接 / 原文格式不合法；',
               '- `blacklist.json` 现有内容未通过校验；',
               '- UID 位于 `revoked` 列表，需要人工复核；',
+              '- 上报内容命中当前 `keywords.json` 关键词规则，或缺少昵称/评论内容无法完成关键词检查；',
               '- 分支保护拒绝了直接推送。',
               '',
               '请维护者检查 workflow 日志，修正后移除并重新添加 `resolved` 标签，或手工处理。'
