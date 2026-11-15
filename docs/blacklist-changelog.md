@@ -17,3 +17,4 @@ _尚无变更。_
 - 新增 UID 3747574890630353（Issue [#8](https://github.com/OrO-c/pkillFish/issues/8)）：DSH / 大肥鱼 Agent 评论（社区上报）
 - 新增 UID 40776667（Issue [#9](https://github.com/OrO-c/pkillFish/issues/9)）：DSH / 大肥鱼 Agent 评论（社区上报）
 - 新增 UID 3546624756288408（Issue [#7](https://github.com/OrO-c/pkillFish/issues/7)）：DSH / 大肥鱼 Agent 评论（社区上报）
+- 新增 UID 3747573412138687（Issue [#10](https://github.com/OrO-c/pkillFish/issues/10)）：DSH / 大肥鱼 Agent 评论（社区上报）
