@@ -134,13 +134,17 @@ def hashed_features(text: str, spec: dict[str, Any]) -> set[int]:
     return result
 
 
-def load_rows(paths: Iterable[Path]) -> list[dict[str, Any]]:
+def load_rows(paths: Iterable[Path], include_precut: bool = False) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in paths:
         if not path.exists():
             continue
         if path.is_dir():
-            files = sorted(path.rglob("*.jsonl"))
+            files = [
+                file
+                for file in sorted(path.rglob("*.jsonl"))
+                if include_precut or file.name != "negatives.jsonl"
+            ]
         else:
             files = [path]
         for file in files:
@@ -226,40 +230,47 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
     ]
     positive_groups = [uid for uid in groups if uid not in set(negative_groups)]
     rng = np.random.default_rng(seed)
-    negative_groups.sort(key=lambda uid: (group_counts[uid], uid))
-    rng.shuffle(positive_groups)
     rng.shuffle(negative_groups)
+    rng.shuffle(positive_groups)
 
     test_groups: set[str] = set()
     valid_groups: set[str] = set()
 
-    # 正负 UID 分别抽 20% 进测试/验证，避免只按总组数抽时
-    # 正样本组被测试集吃光、验证集没有正样本。
-    def take(pool: list[str], fraction: float) -> tuple[list[str], list[str]]:
-        count = max(1, round(len(pool) * fraction)) if pool else 0
-        return pool[:count], pool[count:]
+    def take_by_rows(pool: list[str], target_rows: int) -> tuple[list[str], list[str]]:
+        selected: list[str] = []
+        remaining: list[str] = []
+        accumulated = 0
+        for index, uid in enumerate(pool):
+            if selected and accumulated >= target_rows:
+                remaining.extend(pool[index:])
+                break
+            selected.append(uid)
+            accumulated += group_counts[uid]
+        return selected, remaining
 
-    test_neg, rest_neg = take(negative_groups, 0.2)
-    valid_neg, train_neg = take(rest_neg, 0.2)
-    test_pos, rest_pos = take(positive_groups, 0.2)
-    valid_pos, train_pos = take(rest_pos, 0.2)
+    # 按“行数”而不是“账号数”分配测试/验证，避免一个大账号主导某一类。
+    pos_total = sum(group_counts[uid] for uid in positive_groups)
+    neg_total = sum(group_counts[uid] for uid in negative_groups)
+    test_pos, rest_pos = take_by_rows(positive_groups, round(pos_total * 0.2))
+    valid_pos, train_pos = take_by_rows(rest_pos, round(pos_total * 0.2))
+    test_neg, rest_neg = take_by_rows(negative_groups, round(neg_total * 0.2))
+    valid_neg, train_neg = take_by_rows(rest_neg, round(neg_total * 0.2))
 
-    test_groups.update(test_neg)
     test_groups.update(test_pos)
-    valid_groups.update(valid_neg)
+    test_groups.update(test_neg)
     valid_groups.update(valid_pos)
+    valid_groups.update(valid_neg)
 
-    # 如果某一类样本太少导致训练集为空，回退一部分验证组给训练集。
-    if not train_neg and valid_neg:
-        train_neg.append(valid_neg.pop())
     if not train_pos and valid_pos:
         train_pos.append(valid_pos.pop())
+    if not train_neg and valid_neg:
+        train_neg.append(valid_neg.pop())
 
     train = [row for row in rows if row["uid"] not in test_groups and row["uid"] not in valid_groups]
     valid = [row for row in rows if row["uid"] in valid_groups]
     test = [row for row in rows if row["uid"] in test_groups]
     info = {
-        "method": "group_by_uid_class_aware",
+        "method": "group_by_uid_row_target",
         "groups": len(groups),
         "testGroups": len(test_groups),
         "validGroups": len(valid_groups),
@@ -343,11 +354,17 @@ def main() -> int:
     parser.add_argument("--C", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=20261001)
     parser.add_argument("--since", default="2026-10-01", help="正样本最早日期；负样本不受限")
+    parser.add_argument("--blacklist", default=str(ROOT / "blacklist.json"))
+    parser.add_argument(
+        "--include-pre-cutoff-negatives",
+        action="store_true",
+        help="把 negatives.jsonl（2026-10 前旧评论）也作为负样本；默认不加载，避免标签噪声",
+    )
     args = parser.parse_args()
 
     data_paths = [Path(p) for p in args.data] or [Path(__file__).resolve().parent / "data"]
     data_paths.extend(Path(p) for p in args.negatives)
-    rows = load_rows(data_paths)
+    rows = load_rows(data_paths, include_precut=args.include_pre_cutoff_negatives)
     tz = ZoneInfo("Asia/Shanghai")
     since = datetime.fromisoformat(args.since).replace(tzinfo=tz)
     filtered: list[dict[str, Any]] = []
@@ -373,6 +390,30 @@ def main() -> int:
         log(f"丢弃 {dropped_old} 条 2026-10-01 之前的正样本")
     if dropped_undated:
         log(f"丢弃 {dropped_undated} 条没有合法 ctime 的正样本")
+    # 新加入黑名单的账号，其旧评论不应继续作为负样本；
+    # 否则同一个 UID 会同时出现在正负两类里。
+    blacklist = json.loads(Path(args.blacklist).read_text(encoding="utf-8"))
+    blacklisted = {str(entry.get("mid")) for entry in blacklist.get("entries", []) if isinstance(entry, dict)}
+    before = len(filtered)
+    kept: list[dict[str, Any]] = []
+    for row in filtered:
+        if row["label"] == 0 and row["uid"] in blacklisted:
+            # 同一账号在 2026-10 之前的评论可以作为 hard negative；
+            # 没有时间的正常评论如果账号后来进了黑名单，则不能继续当负样本。
+            try:
+                created = datetime.fromisoformat(row["ctime"].replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=tz)
+                if created.astimezone(tz) < since:
+                    kept.append(row)
+                    continue
+            except (ValueError, TypeError):
+                pass
+            continue
+        kept.append(row)
+    filtered = kept
+    if before != len(filtered):
+        log(f"移除 {before - len(filtered)} 条来自当前黑名单账号、且不在 2026-10 前的负样本")
     rows = dedupe_rows(filtered)
     if not rows:
         log("没有可用样本")

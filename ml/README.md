@@ -76,6 +76,8 @@ python ml/scrape_aicu.py \
 
 该选项会把 2026-10 边界之后额外 2 页（默认）的旧评论写入 `negatives.jsonl`，标记 `label: 0`，作为同一账号人类时期的 hard negative。它不是默认行为，因为默认采集范围严格限定为 2026-10 之后；`--negative-pages 0` 表示不额外采集旧页。
 
+训练默认**不加载** `negatives.jsonl`，因为旧评论也可能已经带有 Agent 风格，容易污染负样本。确实要加入时显式加 `--include-pre-cutoff-negatives`。
+
 也可以把其他来源的公开人类评论整理成：
 
 ```json
