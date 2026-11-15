@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.2.0
+// @version      1.2.1
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.2.1';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -610,6 +610,7 @@
   let filterNoticeEl = null;
   let filterHeaderObservers = new WeakSet();
   let filterHeaderClickBound = new WeakSet();
+  let filterSortExitBound = new WeakSet();
   let filterHeaderRetry = new WeakMap();
   let filterMasks = new Map();
   let pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
@@ -2644,7 +2645,7 @@
     if (tag === SELECTORS.newHost) {
       if (node.shadowRoot) {
         observeShadow(node.shadowRoot);
-        ensureFilterButton(node);
+        try { ensureFilterButton(node); } catch (e) { debug('ensure error', e && e.message); }
         scanChildren(node.shadowRoot, depth + 1);
       } else {
         scheduleNodeRescan(node, depth, 500);
@@ -2895,6 +2896,35 @@
       );
     }
 
+    // 筛选状态下点击“最热/最新”应当直接退出筛选，并把点击继续交给 B 站排序。
+    if (!filterSortExitBound.has(headerShadow)) {
+      filterSortExitBound.add(headerShadow);
+      headerShadow.addEventListener(
+        'click',
+        function (event) {
+          if (!fishFilterActive) return;
+          const path =
+            typeof event.composedPath === 'function' ? event.composedPath() : [];
+          let inSort = false;
+          let onFilterButton = false;
+          for (let i = 0; i < path.length; i += 1) {
+            const node = path[i];
+            if (!node || node.nodeType !== 1) continue;
+            if (node.id === 'sort-actions') inSort = true;
+            if (
+              node.matches &&
+              node.matches('[data-pf-filter-button]')
+            ) {
+              onFilterButton = true;
+            }
+          }
+          if (!inSort || onFilterButton) return;
+          exitFishFilter();
+        },
+        true
+      );
+    }
+
     const existing = headerShadow.querySelector('[data-pf-filter-button]');
     if (existing) {
       filterButton = existing;
@@ -2931,19 +2961,24 @@
   function relaxFilterMasks() {
     if (!filterHost || !filterHost.shadowRoot) return;
     const header = filterHost.shadowRoot.querySelector('bili-comments-header-renderer');
-    const list = [];
-    if (header && header.shadowRoot) {
-      list.push(header.shadowRoot.querySelector('#limit-mask-wall'));
-    }
-    list.push(filterHost.shadowRoot.querySelector('#limit-mask-wall'));
+    const roots = [filterHost.shadowRoot];
+    if (header && header.shadowRoot) roots.push(header.shadowRoot);
 
-    for (let i = 0; i < list.length; i += 1) {
-      const mask = list[i];
-      if (!mask) continue;
-      if (!filterMasks.has(mask)) {
-        filterMasks.set(mask, mask.style.pointerEvents || '');
+    for (let r = 0; r < roots.length; r += 1) {
+      let masks;
+      try {
+        masks = roots[r].querySelectorAll('[id^="limit-mask"]');
+      } catch (_) {
+        masks = [];
       }
-      mask.style.pointerEvents = 'none';
+      for (let i = 0; i < masks.length; i += 1) {
+        const mask = masks[i];
+        if (!mask) continue;
+        if (!filterMasks.has(mask)) {
+          filterMasks.set(mask, mask.style.pointerEvents || '');
+        }
+        mask.style.pointerEvents = 'none';
+      }
     }
   }
 
@@ -3166,7 +3201,7 @@
       'padding:18px 0;color:inherit;opacity:0.6;font-size:13px;' +
       'line-height:1.6;text-align:center;';
     notice.textContent = count
-      ? '已屏蔽肥鱼：本页 ' + count + ' 条。楼中楼会带出父评论。'
+      ? '已屏蔽肥鱼：本页 ' + count + ' 条（仅当前已加载评论）。楼中楼会带出父评论。'
       : '已屏蔽肥鱼：本页暂无记录。';
     feed.insertBefore(notice, feed.firstChild);
     filterNoticeEl = notice;
