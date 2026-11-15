@@ -1,6 +1,6 @@
 {
   "name": "pkillfish",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "private": true,
   "description": "B站 DSH / 大肥鱼 Agent 评论静默净化油猴脚本",
   "type": "module",

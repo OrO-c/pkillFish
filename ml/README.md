@@ -4,6 +4,7 @@
 
 - `scrape_aicu.py`：通过 Firefox 访问 aicu.cc 的公开查询接口，采集指定 UID 的历史评论。
 - `train_model.py`：训练字符 n-gram + 逻辑回归模型，导出浏览器可加载的 `model.json`。
+- `scrape_video.py`：从给定 BV 视频采集同领域硬负样本。
 - `artifacts/`：训练产物；其中 `model.json` / `model.card.md` 随主仓库发布，其他中间文件可忽略。
 - `data/`：本地样本；不会提交到本仓库。
 
@@ -85,6 +86,28 @@ python ml/scrape_aicu.py \
 ```
 
 训练只读取 `text`、`uid`、`label` 和 `ctime`；不会把 UID 当作特征。正样本判定只看“账号 + 发布时间”，不按评论内容筛选。
+
+### 同视频硬负样本（推荐）
+
+模型最容易学错的是“AI 科技区评论”而不是“大肥鱼风格”。最有效的负样本是同一视频、同一评论楼里的正常人类评论。
+
+```bash
+python ml/scrape_video.py \
+  --bv BV1xxxxxxxxx \
+  --profile-dir ~/.mozilla/firefox/xxxx.default-release \
+  --headful
+```
+
+- `--bv` 可以给完整 BV 号或视频 URL，可重复；
+- `--profile-dir` 使用已有 Firefox 用户数据，保留登录态；
+- 不传 `--profile-dir` 时会尝试自动探测默认 profile；
+- 使用已有 profile 前请先关闭正在运行的 Firefox，否则 profile 可能被锁；
+- 不想使用已有数据时加 `--no-profile`；
+- 输出 `ml/data/same-video.jsonl`，全部 `label: 0`，权重 `2`；
+- 记录 `video`、`oid`、`thread`，训练时按视频/评论楼分组；
+- 不调用 B 站 API，只读公开页面 DOM。
+
+建议每个出现大肥鱼的视频都抓一次，优先抓有大量正常回复的视频。
 
 ### 正常人类评论采集
 

@@ -10,7 +10,7 @@
 - 使用远端 UID 黑名单和独立关键词规则，同时保留本地白名单。
 - 提供批量上报队列和 GitHub Issue 审核流程。
 
-当前脚本版本：`1.5.7`
+当前脚本版本：`1.5.8`
 
 ## 目录
 
@@ -205,7 +205,7 @@ ml-false-positive-accepted
 
 不创建标签也能通过标题和隐藏的 `pkillfish:ml-false-positive` 元数据收集。
 
-默认模型地址是 `https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json`，模型随主仓库发布。训练、采集和模型发布说明见 [ml/README.md](ml/README.md)。
+默认模型地址是 `https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json`，模型随主仓库发布。同领域负样本采集、训练和模型发布说明见 [ml/README.md](ml/README.md)。
 
 ## 屏蔽规则
 
@@ -443,6 +443,7 @@ npm run check            # 语法 + 两个规则文件 + 全部测试
 
 # Python 实验模型工具链（需要自行安装 ml/requirements.txt）
 python ml/scrape_aicu.py --help
+python ml/scrape_video.py --help
 python ml/train_model.py --help
 ```
 
@@ -472,6 +473,7 @@ python ml/train_model.py --help
 │   └── report.test.mjs
 ├── ml/
 │   ├── scrape_aicu.py
+│   ├── scrape_video.py
 │   ├── train_model.py
 │   ├── requirements.txt
 │   ├── data/

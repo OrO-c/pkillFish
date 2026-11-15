@@ -193,6 +193,7 @@ def extract_comments(page: Any, bv: str, oid: str, blacklisted: set[str]) -> lis
                 "uid": uid,
                 "rpid": rpid,
                 "oid": oid,
+                "group": "v:" + (oid or bv),
                 "video": bv,
                 "thread": str(item.get("thread") or ""),
                 "parent": str(item.get("parent") or ""),
@@ -252,12 +253,20 @@ def main() -> int:
         context = None
         browser = None
         if profile:
-            context = playwright.firefox.launch_persistent_context(
-                user_data_dir=str(profile),
-                headless=not args.headful,
-                locale="zh-CN",
-                viewport={"width": 1366, "height": 900},
-            )
+            try:
+                context = playwright.firefox.launch_persistent_context(
+                    user_data_dir=str(profile),
+                    headless=not args.headful,
+                    locale="zh-CN",
+                    viewport={"width": 1366, "height": 900},
+                )
+            except Exception as exc:
+                log(
+                    f"无法用已有 Firefox profile 启动：{exc}\n"
+                    "请先完全关闭 Firefox，或换一个 profile 目录；"
+                    "不想使用已有数据时加 --no-profile。"
+                )
+                return 2
             page = context.pages[0] if context.pages else context.new_page()
         else:
             browser = playwright.firefox.launch(headless=not args.headful)

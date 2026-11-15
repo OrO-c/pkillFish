@@ -193,10 +193,13 @@ def load_rows(paths: Iterable[Path], include_precut: bool = False) -> list[dict[
                     weight = 1.0
                 weight = max(0.1, min(20.0, weight))
                 source = str(row.get("source") or "")
+                oid = str(row.get("oid") or "")
+                group = str(row.get("group") or ("v:" + oid if oid else "u:" + uid))
                 rows.append(
                     {
                         "text": text,
                         "uid": uid,
+                        "group": group,
                         "label": label,
                         "weight": weight,
                         "must_train": weight > 1.0 or source == "github-ml-false-positive",
@@ -229,7 +232,7 @@ def dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], list[dict], list[dict], dict]:
-    groups = sorted({row["uid"] for row in rows})
+    groups = sorted({row["group"] for row in rows})
     if len(groups) < 3:
         log("UID 分组少于 3 个，无法做严格分组切分；改用随机切分，指标可能偏乐观")
         rng = np.random.default_rng(seed)
@@ -245,10 +248,10 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
 
     by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        by_group[row["uid"]].append(row)
+        by_group[row["group"]].append(row)
     group_counts = {uid: len(items) for uid, items in by_group.items()}
     hard_groups = {
-        row["uid"] for row in rows if row.get("must_train")
+        row["group"] for row in rows if row.get("must_train")
     }
     # 已审核的误判样本必须进入训练集，不能被随机分到测试/验证。
     negative_groups = [
@@ -294,9 +297,9 @@ def split_groups(rows: list[dict[str, Any]], seed: int) -> tuple[list[dict], lis
     if not train_neg and valid_neg:
         train_neg.append(valid_neg.pop())
 
-    train = [row for row in rows if row["uid"] not in test_groups and row["uid"] not in valid_groups]
-    valid = [row for row in rows if row["uid"] in valid_groups]
-    test = [row for row in rows if row["uid"] in test_groups]
+    train = [row for row in rows if row["group"] not in test_groups and row["group"] not in valid_groups]
+    valid = [row for row in rows if row["group"] in valid_groups]
+    test = [row for row in rows if row["group"] in test_groups]
     info = {
         "method": "group_by_uid_row_target",
         "groups": len(groups),
@@ -539,6 +542,7 @@ def main() -> int:
             "classes": counts,
             "split": split_info,
             "uidGroups": len({row["uid"] for row in rows}),
+            "videoGroups": len({row["group"] for row in rows}),
             "seed": args.seed,
             "C": args.C,
             "dedupe": "normalized-text",
