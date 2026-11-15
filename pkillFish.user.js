@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.1.0
+// @version      1.1.1
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.1.1';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -606,7 +606,9 @@
   let filterDebounce = null;
   let filterNoticeEl = null;
   let filterHeaderObservers = new WeakSet();
+  let filterHeaderClickBound = new WeakSet();
   let filterHeaderRetry = new WeakMap();
+  let filterMasks = new Map();
   let pageStats = { total: 0, blacklist: 0, rules: 0, model: 0 };
 
   let burstTracker = new Map();
@@ -2781,10 +2783,33 @@
       }
     }
 
+    // 事件委托：即使 B 站重建/克隆了 header 内部节点，按钮仍然可点击。
+    // 放在 capture 阶段，先于 B 站自己的排序点击处理，避免点“已屏蔽肥鱼”被当成排序。
+    if (!filterHeaderClickBound.has(headerShadow)) {
+      filterHeaderClickBound.add(headerShadow);
+      headerShadow.addEventListener(
+        'click',
+        function (event) {
+          const target = event.target;
+          if (!target || !target.closest) return;
+          const button = target.closest('[data-pf-filter-button]');
+          if (!button) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          toggleFishFilter();
+        },
+        true
+      );
+    }
+
     const existing = headerShadow.querySelector('[data-pf-filter-button]');
     if (existing) {
       filterButton = existing;
       updateFilterButton();
+      if (fishFilterActive) relaxFilterMasks();
       return true;
     }
 
@@ -2804,17 +2829,41 @@
     button.style.cssText =
       'all:unset;cursor:pointer;color:inherit;font:inherit;font-size:13px;' +
       'line-height:20px;padding:0 0 0 10px;margin-left:2px;' +
-      'border-left:1px solid rgba(128,128,128,0.25);white-space:nowrap;';
-    button.addEventListener('click', function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleFishFilter();
-    });
-
+      'border-left:1px solid rgba(128,128,128,0.25);white-space:nowrap;' +
+      'position:relative;z-index:5;pointer-events:auto;';
     sortActions.appendChild(button);
     filterButton = button;
     updateFilterButton();
+    if (fishFilterActive) relaxFilterMasks();
     return true;
+  }
+
+  function relaxFilterMasks() {
+    if (!filterHost || !filterHost.shadowRoot) return;
+    const header = filterHost.shadowRoot.querySelector('bili-comments-header-renderer');
+    const list = [];
+    if (header && header.shadowRoot) {
+      list.push(header.shadowRoot.querySelector('#limit-mask-wall'));
+    }
+    list.push(filterHost.shadowRoot.querySelector('#limit-mask-wall'));
+
+    for (let i = 0; i < list.length; i += 1) {
+      const mask = list[i];
+      if (!mask) continue;
+      if (!filterMasks.has(mask)) {
+        filterMasks.set(mask, mask.style.pointerEvents || '');
+      }
+      mask.style.pointerEvents = 'none';
+    }
+  }
+
+  function restoreFilterMasks() {
+    for (const [mask, previous] of filterMasks) {
+      if (!mask || !mask.isConnected) continue;
+      if (previous) mask.style.pointerEvents = previous;
+      else mask.style.removeProperty('pointer-events');
+    }
+    filterMasks = new Map();
   }
 
   function countConnectedBlockedRecords() {
@@ -3040,6 +3089,7 @@
 
     clearFilterHides();
     clearNormalHidesForFilter();
+    relaxFilterMasks();
 
     const collected = collectFilterGroups();
     const groups = collected.groups;
@@ -3100,6 +3150,7 @@
     }
     clearFilterHides();
     removeFilterNotice();
+    restoreFilterMasks();
     restoreNormalHidesFromRecords();
     updateFilterButton();
   }
@@ -3917,6 +3968,7 @@
     }
     filterButton = null;
     filterHost = null;
+    restoreFilterMasks();
     if (filterDebounce) {
       clearTimeout(filterDebounce);
       filterDebounce = null;
