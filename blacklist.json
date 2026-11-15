@@ -1,12 +1,11 @@
 {
   "schemaVersion": 1,
-  "version": 1,
-  "updatedAt": "2026-11-15T00:00:00.000Z",
+  "version": 2,
+  "updatedAt": "2026-11-15T08:30:00.000Z",
   "entries": [],
   "revoked": [],
   "rules": {
     "nicknameKeywords": [
-      "大肥鱼",
       "dsh-agent",
       "dsh agent",
       "deepseek harness"

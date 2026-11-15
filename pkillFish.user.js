@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.1.1
+// @version      1.1.2
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.1.1';
+  const VERSION = '1.1.2';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -111,7 +111,7 @@
       count: 8,
       windowMinutes: 10
     },
-    nicknameKeywords: ['大肥鱼', 'dsh-agent', 'dsh agent', 'deepseek harness'],
+    nicknameKeywords: ['dsh-agent', 'dsh agent', 'deepseek harness'],
     avatarHashes: [],
     phrasePatterns: [
       '作为(一个|一名)?(AI|人工智能|语言模型|智能体|助手)',
@@ -629,7 +629,11 @@
       settings: defaultSettings(),
       whitelist: { mids: [], rpids: [], fingerprints: [] },
       stats: { total: 0, blacklist: 0, rules: 0, model: 0, byDay: {} },
-      log: []
+      log: [],
+      migrations: {
+        broadNicknameRemoved: false,
+        broadRemoteNicknameRemoved: false
+      }
     };
   }
 
@@ -789,6 +793,7 @@
     const raw = gmGet(STORAGE.state, null);
     const saved = safeJsonParse(raw);
     const fresh = defaultState();
+    let dirty = false;
     if (!isPlainObject(saved)) {
       state = fresh;
     } else {
@@ -797,9 +802,30 @@
       state.whitelist = sanitizeWhitelist(saved.whitelist);
       state.stats = sanitizeStats(saved.stats);
       state.log = sanitizeLog(saved.log);
+      if (isPlainObject(saved.migrations)) {
+        state.migrations.broadNicknameRemoved =
+          saved.migrations.broadNicknameRemoved === true;
+        state.migrations.broadRemoteNicknameRemoved =
+          saved.migrations.broadRemoteNicknameRemoved === true;
+      }
     }
+
+    // 1.1.2：单独词“大肥鱼”会把普通用户的昵称误判成 Agent。
+    // 仅移除这个过宽的默认词，保留 dsh-agent / deepseek harness 等更具体的词。
+    if (!state.migrations.broadNicknameRemoved) {
+      const before = state.settings.nicknameKeywords.length;
+      state.settings.nicknameKeywords = state.settings.nicknameKeywords.filter(
+        function (keyword) {
+          return keyword !== '大肥鱼';
+        }
+      );
+      state.migrations.broadNicknameRemoved = true;
+      if (state.settings.nicknameKeywords.length !== before) dirty = true;
+    }
+
     settings = state.settings;
     rebuildWhitelistSets();
+    if (dirty) saveState(true);
     debug('state loaded', { settings: settings });
   }
 
@@ -809,7 +835,8 @@
       settings: state.settings,
       whitelist: state.whitelist,
       stats: state.stats,
-      log: state.log
+      log: state.log,
+      migrations: state.migrations
     };
   }
 
@@ -1041,10 +1068,23 @@
 
   function loadBlacklistCache() {
     const cached = safeJsonParse(gmGet(STORAGE.blacklist, null));
+    let cacheDirty = false;
     if (cached) {
       const normalized = normalizeDoc(cached);
       blacklistDoc = normalized.doc;
       if (normalized.rejected) debug('blacklist cache rejected entries', normalized.rejected);
+    }
+
+    // 同时清掉旧缓存里远端下发的“大肥鱼”宽泛关键词，避免更新后仍被旧缓存误伤。
+    if (!state.migrations.broadRemoteNicknameRemoved) {
+      const before = blacklistDoc.rules.nicknameKeywords.length;
+      blacklistDoc.rules.nicknameKeywords = blacklistDoc.rules.nicknameKeywords.filter(
+        function (keyword) {
+          return keyword !== '大肥鱼';
+        }
+      );
+      state.migrations.broadRemoteNicknameRemoved = true;
+      if (blacklistDoc.rules.nicknameKeywords.length !== before) cacheDirty = true;
     }
 
     const meta = safeJsonParse(gmGet(STORAGE.blacklistMeta, null));
@@ -1059,6 +1099,10 @@
 
     rebuildBlacklistIndex();
     rebuildRules();
+    if (cacheDirty) {
+      persistBlacklistCache();
+      saveState();
+    }
     debug('blacklist loaded', {
       entries: blacklistDoc.entries.length,
       version: blacklistDoc.version
@@ -1995,6 +2039,8 @@
     function composeBody(textValue, truncatedNote) {
       return [
         metaBlock,
+        '',
+        '> 提交后不会自动加入黑名单。维护者审核后打 `resolved` 才会加入；打 `wontfix` 表示不加入。',
         '',
         '### 可疑评论',
         '',

@@ -158,7 +158,8 @@ B 站移动网页版有时会把评论入口限制在 App 内。这种情况下�
 
 - 昵称、头像、高频、模板同文，任意一个强信号单独即可触发；
 - 固定话术单独命中不够，需要再叠加一个信号；
-- 默认昵称关键词只放入了“大肥鱼”“dsh-agent”“dsh agent”“deepseek harness”这类相对具体的词，没有放“鱼”“鲸”这种大范围词，避免误伤普通用户。
+- 1.1.2 起默认不再包含单独词“大肥鱼”：它会把昵称里带这三个字的普通用户误判成 Agent。默认只保留“dsh-agent”“dsh agent”“deepseek harness”这类更具体的词。
+- 如果连这些也不想用，直接在面板关闭“启用规则扫描”，就退化为纯 UID 黑名单模式。
 - 高频规则只统计发布时间落在窗口内的评论；页面上几年前的历史评论不会被当成“刚刚刷屏”。时间无法解析时，高频规则不参与，但模板同文仍可触发。
 
 这些值都可以在面板里调整。改完点击“保存设置”，已有评论会重新评估。
@@ -200,7 +201,7 @@ https://raw.githubusercontent.com/<owner>/pkillFish/main/blacklist.json
   ],
   "revoked": [],
   "rules": {
-    "nicknameKeywords": ["大肥鱼", "dsh-agent"],
+    "nicknameKeywords": ["dsh-agent", "deepseek harness"],
     "avatarHashes": []
   }
 }
@@ -255,6 +256,8 @@ pf:v1:blacklist-meta
 2. 拼出一个 GitHub Issue 新建页 URL；
 3. 用 `GM_openInTab` 打开新标签页；不可用时退回 `window.open`；
 4. 由用户在 GitHub 页面确认内容、附截图、点击提交。
+
+提交 Issue 本身不会自动加入黑名单。只有维护者审核后打上 `resolved`，workflow 才会写入；打上 `wontfix` 则只回复并关闭，不改名单。
 
 Issue 会预填：
 
