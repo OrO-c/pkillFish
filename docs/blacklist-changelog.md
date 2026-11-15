@@ -180,3 +180,7 @@ _尚无变更。_
 - 新增 UID 3706994443683878（Issue [#50](https://github.com/OrO-c/pkillFish/issues/50)）：批量可疑评论（2 条）
 - 补充证据 UID 3747580265631445（Issue [#51](https://github.com/OrO-c/pkillFish/issues/51)）
 - 补充证据 UID 3706994443683878（Issue [#51](https://github.com/OrO-c/pkillFish/issues/51)）
+- 新增 UID 3546703881833440（Issue [#52](https://github.com/OrO-c/pkillFish/issues/52)）：批量可疑评论（4 条）
+- 新增 UID 208510535（Issue [#52](https://github.com/OrO-c/pkillFish/issues/52)）：批量可疑评论（4 条）
+- 新增 UID 3747580211104818（Issue [#52](https://github.com/OrO-c/pkillFish/issues/52)）：批量可疑评论（4 条）
+- 新增 UID 3707005329999907（Issue [#52](https://github.com/OrO-c/pkillFish/issues/52)）：批量可疑评论（4 条）
