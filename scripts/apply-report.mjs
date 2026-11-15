@@ -83,7 +83,7 @@ function escapeMarkdown(value) {
     .trim();
 }
 
-function appendChangelog(entry, issue, action) {
+function appendChangelog(entry, issue, action, reasonText) {
   const absolute = path.resolve(process.cwd(), CHANGELOG_FILE);
   fs.mkdirSync(path.dirname(absolute), { recursive: true });
 
@@ -97,7 +97,7 @@ function appendChangelog(entry, issue, action) {
 
   const date = new Date().toISOString().slice(0, 10);
   const issueUrl = `https://github.com/${repository}/issues/${issue}`;
-  const reason = escapeMarkdown(cleanReason(entry.reason || '社区上报'));
+  const reason = escapeMarkdown(cleanReason(reasonText || '社区上报'));
   const line =
     action === 'reported'
       ? `- 补充证据 UID ${entry.mid}（Issue [#${issue}](${issueUrl})）`
@@ -209,8 +209,7 @@ function main() {
       if (doc.entries.length >= MAX_ENTRIES) {
         fail(`黑名单已达上限 ${MAX_ENTRIES}，拒绝自动追加`);
       }
-      const reason = reasonFromIssue(issueTitle, issueNumber);
-      doc.entries.push(buildEntry(mid, reason, issueNumber));
+      doc.entries.push(buildEntry(mid, issueNumber));
       changed = true;
       results.push({ mid, action: 'added' });
       addedCount += 1;
@@ -235,7 +234,14 @@ function main() {
     for (const result of results) {
       if (result.action === 'duplicate') continue;
       const entry = recheck.doc.entries.find((item) => item.mid === result.mid);
-      if (entry) appendChangelog(entry, issueNumber, result.action);
+      if (entry) {
+        appendChangelog(
+          entry,
+          issueNumber,
+          result.action,
+          reasonFromIssue(issueTitle, issueNumber)
+        );
+      }
     }
   }
 

@@ -231,12 +231,11 @@ https://raw.githubusercontent.com/<owner>/pkillFish/main/blacklist.json
 ```json
 {
   "schemaVersion": 1,
-  "version": 12,
+  "version": 16,
   "updatedAt": "2026-11-15T00:00:00.000Z",
   "entries": [
     {
       "mid": "123456789",
-      "reason": "DSH Agent 批量评论（Issue #42）",
       "addedAt": "2026-11-15T00:00:00.000Z",
       "reports": [42]
     }
@@ -252,17 +251,16 @@ https://raw.githubusercontent.com/<owner>/pkillFish/main/blacklist.json
 字段说明：
 
 - `mid`：B 站 UID，也是用户 mid。1-19 位数字，不允许 0 开头。
-- `reason`：给用户看的简短理由，最多 180 字符。
 - `reports`：补充证据的 Issue 编号，去重。
 - `revoked`：需要从黑名单删除的 UID。增量更新不会因为远端暂时缺失就删条目，删除必须通过 `revoked` 显式声明。
 - `rules.nicknameKeywords`：远端下发的昵称关键词，只做字面量子串匹配，不接受正则。
 - `rules.avatarHashes`：远端下发的头像指纹，只接受文件名安全字符。
 
-远端也支持纯文本名单，每行一个 UID，可用 `#`、`|`、`--` 追加理由：
+远端也支持纯文本名单，每行一个 UID；行尾注释只用于阅读，不会写入 JSON：
 
 ```text
 123456789
-987654321 # 模板话术
+987654321 # 仅注释，不写入 JSON
 ```
 
 ### 更新机制

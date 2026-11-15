@@ -25,6 +25,7 @@ test('仓库自带 blacklist.json 通过严格校验', () => {
   const result = validateBlacklist(JSON.parse(text));
   assert.equal(result.ok, true, result.errors.join('\n'));
   assert.equal(result.doc.schemaVersion, 1);
+  assert.equal('reason' in result.doc.entries[0], false);
 });
 
 test('拒绝重复 UID', () => {
@@ -62,7 +63,8 @@ test('解析纯文本 UID 名单', () => {
   const parsed = parseBlacklistText('# comment\n123456789\n987654321 # 模板话术\n');
   assert.equal(parsed.entries.length, 2);
   assert.equal(parsed.entries[0].mid, '123456789');
-  assert.equal(parsed.entries[1].reason, '模板话术');
+  assert.equal(parsed.entries[1].mid, '987654321');
+  assert.equal('reason' in parsed.entries[1], false);
 });
 
 test('解析 JSON 数组名单', () => {
@@ -96,14 +98,14 @@ test('增量合并保留缓存条目，revoked 可删除，规则取并集', () 
 });
 
 test('buildEntry 生成合法条目', () => {
-  const entry = buildEntry('123456789', '  test  ', 7, new Date('2026-11-15T00:00:00Z'));
+  const entry = buildEntry('123456789', 7, new Date('2026-11-15T00:00:00Z'));
   assert.equal(entry.mid, '123456789');
-  assert.equal(entry.reason, 'test');
+  assert.equal('reason' in entry, false);
   assert.deepEqual(entry.reports, [7]);
   assert.equal(entry.addedAt, '2026-11-15T00:00:00.000Z');
 });
 
 test('buildEntry 拒绝非法 UID', () => {
-  assert.throws(() => buildEntry('abc', 'x', 1));
-  assert.throws(() => buildEntry('0', 'x', 1));
+  assert.throws(() => buildEntry('abc', 1));
+  assert.throws(() => buildEntry('0', 1));
 });

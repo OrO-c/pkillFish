@@ -18,6 +18,7 @@ export const MAX_FILE_BYTES = 6 * 1024 * 1024;
 export const MID_RE = /^[1-9]\d{0,18}$/;
 export const AVATAR_KEY_RE = /^[a-z0-9._-]{3,80}$/;
 
+// reason 是旧字段：读取时兼容并丢弃，不再写入 blacklist.json。
 const KNOWN_ENTRY_KEYS = new Set(['mid', 'reason', 'addedAt', 'reports']);
 const KNOWN_TOP_KEYS = new Set([
   'schemaVersion',
@@ -82,7 +83,7 @@ function normalizeEntryForDoc(raw, label, errors, warnings) {
       errors.push(`${label}: UID 格式无效（必须是 1-19 位、非 0 开头的数字）`);
       return null;
     }
-    return { mid, reason: '社区上报', addedAt: '', reports: [] };
+    return { mid, addedAt: '', reports: [] };
   }
 
   if (!isPlainObject(raw)) {
@@ -97,12 +98,6 @@ function normalizeEntryForDoc(raw, label, errors, warnings) {
   const mid = cleanString(String(raw.mid == null ? '' : raw.mid), 20);
   if (!MID_RE.test(mid)) {
     errors.push(`${label}: mid 格式无效`);
-    return null;
-  }
-
-  const reason = cleanReason(raw.reason || '社区上报');
-  if (!reason) {
-    errors.push(`${label}: reason 不能为空`);
     return null;
   }
 
@@ -132,7 +127,7 @@ function normalizeEntryForDoc(raw, label, errors, warnings) {
     }
   }
 
-  return { mid, reason, addedAt, reports };
+  return { mid, addedAt, reports };
 }
 
 /**
@@ -284,7 +279,7 @@ export function parseBlacklistText(text) {
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
     const match = trimmed.match(/^(\d{1,19})(?:\s*(?:#|\||--|,|-|\s)\s*(.*))?$/);
     if (!match) continue;
-    entries.push({ mid: match[1], reason: match[2] || '远端文本名单' });
+    entries.push({ mid: match[1] });
   }
 
   if (!entries.length) throw new Error('文本中没有可解析的 UID');
@@ -327,18 +322,25 @@ export function mergeBlacklists(cached, remote) {
     schemaVersion: SCHEMA_VERSION,
     version: Math.max(Number(cached.version) || 0, Number(remote.version) || 0),
     updatedAt: remote.updatedAt || cached.updatedAt || new Date().toISOString(),
-    entries: sortEntries([...map.values()].filter((entry) => !revoked.has(entry.mid))),
+    entries: sortEntries(
+      [...map.values()]
+        .filter((entry) => !revoked.has(entry.mid))
+        .map((entry) => ({
+          mid: entry.mid,
+          addedAt: entry.addedAt || '',
+          reports: Array.isArray(entry.reports) ? entry.reports : []
+        }))
+    ),
     revoked: [...revoked].sort(compareMid),
     rules: { nicknameKeywords: keywords, avatarHashes: avatars }
   };
 }
 
-export function buildEntry(mid, reason, issueNumber, now = new Date()) {
+export function buildEntry(mid, issueNumber, now = new Date()) {
   const normalizedMid = cleanString(String(mid == null ? '' : mid), 20);
   if (!MID_RE.test(normalizedMid)) throw new Error(`UID 格式无效：${mid}`);
   return {
     mid: normalizedMid,
-    reason: cleanReason(reason) || '社区上报',
     addedAt: now.toISOString(),
     reports: Number.isInteger(issueNumber) && issueNumber > 0 ? [issueNumber] : []
   };

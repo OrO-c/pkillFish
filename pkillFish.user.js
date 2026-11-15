@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.3.1
+// @version      1.4.0
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.3.1';
+  const VERSION = '1.4.0';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -948,7 +948,6 @@
 
   function normalizeEntry(raw) {
     let mid = '';
-    let reason = '社区上报';
     let addedAt = '';
     let reports = [];
 
@@ -956,7 +955,6 @@
       mid = digitsOnly(raw);
     } else if (isPlainObject(raw)) {
       mid = digitsOnly(raw.mid);
-      reason = cleanText(raw.reason || reason, 180, false) || reason;
       addedAt = isIsoDate(raw.addedAt) ? new Date(raw.addedAt).toISOString() : '';
       if (Array.isArray(raw.reports)) {
         for (let i = 0; i < raw.reports.length && reports.length < 200; i += 1) {
@@ -967,7 +965,7 @@
     }
 
     if (!MID_RE.test(mid)) return null;
-    return { mid: mid, reason: reason, addedAt: addedAt, reports: reports };
+    return { mid: mid, addedAt: addedAt, reports: reports };
   }
 
   function normalizeDoc(input) {
@@ -1005,8 +1003,10 @@
       if (byMid.has(entry.mid)) {
         // 同一 mid 取信息更完整的一条，不视为脏数据
         const old = byMid.get(entry.mid);
-        if (!old.reason && entry.reason) old.reason = entry.reason;
         if (!old.addedAt && entry.addedAt) old.addedAt = entry.addedAt;
+        for (let r = 0; r < entry.reports.length; r += 1) {
+          if (old.reports.indexOf(entry.reports[r]) === -1) old.reports.push(entry.reports[r]);
+        }
         continue;
       }
       byMid.set(entry.mid, entry);
@@ -1062,7 +1062,7 @@
       if (!line || line.charAt(0) === '#' || line.indexOf('//') === 0) continue;
       const m = line.match(/^(\d{1,19})(?:\s*(?:#|\||--|,|-|\s)\s*(.*))?$/);
       if (!m) continue;
-      entries.push({ mid: m[1], reason: m[2] || '远端文本名单' });
+      entries.push({ mid: m[1] });
     }
     if (!entries.length) throw new Error('远端文本中没有可解析的 UID');
     return { entries: entries, version: 0, updatedAt: new Date().toISOString() };
@@ -1117,7 +1117,7 @@
       '|' +
       doc.entries
         .map(function (e) {
-          return e.mid + ':' + e.reason;
+          return e.mid + ':' + e.addedAt + ':' + e.reports.join('.');
         })
         .join(',') +
       '|' +
@@ -1718,7 +1718,7 @@
         return {
           block: true,
           reason: 'blacklist',
-          detail: entry.reason || '社区黑名单',
+          detail: '社区黑名单',
           score: 99
         };
       }
