@@ -100,3 +100,8 @@ _尚无变更。_
 - 补充证据 UID 3494362214303755（Issue [#26](https://github.com/OrO-c/pkillFish/issues/26)）
 - 新增 UID 530855615（Issue [#26](https://github.com/OrO-c/pkillFish/issues/26)）：批量可疑评论（5 条）
 - 补充证据 UID 3546385664182752（Issue [#26](https://github.com/OrO-c/pkillFish/issues/26)）
+- 新增 UID 3747576060841891（Issue [#23](https://github.com/OrO-c/pkillFish/issues/23)）：批量可疑评论（5 条）
+- 新增 UID 666739408（Issue [#23](https://github.com/OrO-c/pkillFish/issues/23)）：批量可疑评论（5 条）
+- 新增 UID 3747580961884904（Issue [#23](https://github.com/OrO-c/pkillFish/issues/23)）：批量可疑评论（5 条）
+- 新增 UID 1950354406（Issue [#23](https://github.com/OrO-c/pkillFish/issues/23)）：批量可疑评论（5 条）
+- 新增 UID 3747574037089334（Issue [#23](https://github.com/OrO-c/pkillFish/issues/23)）：批量可疑评论（5 条）
