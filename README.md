@@ -10,7 +10,7 @@
 - 使用远端 UID 黑名单和独立关键词规则，同时保留本地白名单。
 - 提供批量上报队列和 GitHub Issue 审核流程。
 
-当前脚本版本：`1.5.5`
+当前脚本版本：`1.5.6`
 
 ## 目录
 
@@ -184,8 +184,8 @@
 - 关闭“仅在名称旁标记，不隐藏”后：命中评论折叠进“已屏蔽肥鱼”筛选，但仍保留红底文字框。
 - 模型只在当前页面生效，不写入用户状态，不自动下载。
 - 自动屏蔽的模型命中评论不显示普通上报按钮，但仍显示“报告误判”按钮。
-- 点击“报告误判”会打开一个 `ml-false-positive` Issue，用于收集负样本，不会自动加入 UID 黑名单。
-- 误判 Issue 关闭为 `completed`，或打上 `ml-false-positive-accepted` 标签后，视为通过；收集脚本会给它 `weight: 3`，训练时权重高于普通负样本。
+- 点击“报告误判”会打开一个标题以 `[ml-false-positive]` 开头的 Issue，用于收集负样本，不会自动加入 UID 黑名单。Issue 不依赖仓库预建标签。
+- 误判 Issue 关闭为 `completed`，或打上可选的 `ml-false-positive-accepted` 标签后，视为通过；收集脚本会给它 `weight: 3`，训练时权重高于普通负样本。
 - 模型地址可以在设置中填写；留空使用主仓库的 `ml/artifacts/model.json`。
 
 误判样本收集：
@@ -195,12 +195,14 @@ python ml/collect_false_positives.py --repo OrO-c/pkillFish
 python ml/train_model.py --data ml/data --out ml/artifacts/model.json
 ```
 
-需要先在 GitHub 创建标签：
+标签不是必需的。若希望在 GitHub 中方便筛选，可以创建：
 
 ```text
 ml-false-positive
 ml-false-positive-accepted
 ```
+
+不创建标签也能通过标题和隐藏的 `pkillfish:ml-false-positive` 元数据收集。
 
 默认模型地址是 `https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json`，模型随主仓库发布。训练、采集和模型发布说明见 [ml/README.md](ml/README.md)。
 

@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.5
+// @version      1.5.6
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.5';
+  const VERSION = '1.5.6';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -2921,7 +2921,7 @@
     let lastUrl = '';
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const params = new URLSearchParams();
-      params.set('labels', 'ml-false-positive');
+      // 不依赖仓库里预先存在的标签；标题和隐藏 meta 已足够识别。
       params.set('title', title);
       params.set('body', composeBody(textValue, truncatedNote));
       lastUrl = 'https://github.com/' + repo + '/issues/new?' + params.toString();

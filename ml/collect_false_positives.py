@@ -62,9 +62,10 @@ def parse_text(body: str) -> str:
 def fetch_issues(repo: str, label: str, token: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for page in range(1, 21):
-        params = urllib.parse.urlencode(
-            {"state": "all", "labels": label, "per_page": 100, "page": page}
-        )
+        query = {"state": "all", "per_page": 100, "page": page}
+        if label:
+            query["labels"] = label
+        params = urllib.parse.urlencode(query)
         url = f"https://api.github.com/repos/{repo}/issues?{params}"
         headers = {
             "Accept": "application/vnd.github+json",
@@ -90,7 +91,11 @@ def fetch_issues(repo: str, label: str, token: str) -> list[dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="收集 ml-false-positive Issue 为负样本")
     parser.add_argument("--repo", default="OrO-c/pkillFish")
-    parser.add_argument("--label", default="ml-false-positive")
+    parser.add_argument(
+        "--label",
+        default="",
+        help="可选标签过滤；留空时按标题/meta 识别（默认）",
+    )
     parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "data" / "false-positives.jsonl"))
     parser.add_argument("--weight", type=float, default=3.0, help="通过审核的误判样本权重，默认 3")
     args = parser.parse_args()
@@ -108,6 +113,10 @@ def main() -> int:
     issues = fetch_issues(args.repo, args.label, os.environ.get("GITHUB_TOKEN", ""))
     rows: list[dict[str, Any]] = []
     for issue in issues:
+        title = str(issue.get("title") or "")
+        body = str(issue.get("body") or "")
+        if not title.startswith("[ml-false-positive]") and "pkillfish:ml-false-positive" not in body:
+            continue
         labels = {
             str(label.get("name"))
             for label in issue.get("labels", [])
@@ -119,7 +128,6 @@ def main() -> int:
         )
         if not approved:
             continue
-        body = str(issue.get("body") or "")
         meta = parse_meta(body)
         uid = meta.get("uid") or meta.get("mid") or ""
         rpid = meta.get("rpid") or ""

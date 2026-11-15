@@ -2,7 +2,6 @@
 name: 机器学习误判反馈
 about: 报告被实验模型误判为 AI 的正常人类评论，用于收集负样本
 title: "[ml-false-positive] "
-labels: ml-false-positive
 assignees: ''
 ---
 

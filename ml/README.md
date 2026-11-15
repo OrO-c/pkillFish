@@ -178,7 +178,7 @@ https://raw.githubusercontent.com/OrO-c/pkillFish/main/ml/artifacts/model.json
 
 ## 误判负样本
 
-被实验模型判定为 AI 的评论旁会出现“报告误判”按钮，打开带 `ml-false-positive` 标签的 Issue。它只用于收集负样本，不会进入 UID 黑名单。
+被实验模型判定为 AI 的评论旁会出现“报告误判”按钮，打开标题以 `[ml-false-positive]` 开头的 Issue。它只用于收集负样本，不会进入 UID 黑名单，也不依赖仓库预建标签。
 
 审核规则：
 
@@ -199,12 +199,14 @@ python ml/collect_false_positives.py --repo OrO-c/pkillFish
 
 训练时 `train_model.py` 会把这些权重传给逻辑回归；普通负样本权重为 1。默认 `--data ml/data` 会自动加载这个文件。
 
-需要在 GitHub 仓库中创建标签：
+标签不是必需的；如果需要 GitHub 侧筛选，可以创建：
 
 ```text
 ml-false-positive
 ml-false-positive-accepted
 ```
+
+不创建标签也能通过标题和隐藏 meta 收集。
 
 ## 在脚本中使用
 ## 在脚本中使用
