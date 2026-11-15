@@ -5,6 +5,7 @@ node_modules/
 .DS_Store
 ml/data/raw/
 ml/data/*.jsonl
+!ml/data/false-positives.jsonl
 ml/.venv/
 __pycache__/
 *.pyc
