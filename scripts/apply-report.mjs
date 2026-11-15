@@ -6,12 +6,12 @@
  *   ISSUE_BODY, ISSUE_TITLE, ISSUE_NUMBER, GITHUB_REPOSITORY
  *
  * 行为：
- *   1. 严格解析 Issue 正文中的 pkillfish:meta 区块；
+ *   1. 严格解析 Issue 正文中的 pkillfish:meta（单条）或 pkillfish:batch（批量）区块；
  *   2. 二次校验现有 blacklist.json；
  *   3. 新 UID 追加条目；已有 UID 只补充 reports 证据；
  *   4. 再次校验后原子写入；
  *   5. 新条目写入变更日志；
- *   6. 输出 changed / mid / action / count 给 workflow。
+ *   6. 输出 changed / mid / mids / action / count / added / reported / duplicate 给 workflow。
  *
  * 不访问网络，不调用 B 站 API，不执行 Issue 中的任何代码。
  */
@@ -130,46 +130,64 @@ function main() {
     fail(`Issue 解析失败：${parsedIssue.errors.join('；')}`);
   }
 
-  const { mid } = parsedIssue.meta;
+  const reports = parsedIssue.reports || [];
+  if (!reports.length) {
+    fail('Issue 中没有可处理的 UID');
+  }
+
   const validation = validateBlacklist(readJson(BLACKLIST_FILE));
   if (!validation.ok) {
     fail(`现有黑名单校验失败：${validation.errors.join('；')}`);
   }
 
   const doc = validation.doc;
-  if (doc.revoked.includes(mid)) {
-    fail(`UID ${mid} 位于 revoked 列表，需维护者人工处理`);
+  for (const report of reports) {
+    if (doc.revoked.includes(report.mid)) {
+      fail(`UID ${report.mid} 位于 revoked 列表，需维护者人工处理`);
+    }
   }
 
-  const index = doc.entries.findIndex((entry) => entry.mid === mid);
-  const existing = index >= 0 ? doc.entries[index] : null;
-
+  const results = [];
+  const mids = [];
+  let addedCount = 0;
+  let reportedCount = 0;
+  let duplicateCount = 0;
   let changed = false;
-  let action = 'duplicate';
 
-  if (existing) {
-    if (!existing.reports.includes(issueNumber)) {
-      existing.reports.push(issueNumber);
-      if (existing.reports.length > 200) existing.reports = existing.reports.slice(-200);
+  for (const report of reports) {
+    const mid = report.mid;
+    mids.push(mid);
+    const index = doc.entries.findIndex((entry) => entry.mid === mid);
+    const existing = index >= 0 ? doc.entries[index] : null;
+
+    if (existing) {
+      if (!existing.reports.includes(issueNumber)) {
+        existing.reports.push(issueNumber);
+        if (existing.reports.length > 200) existing.reports = existing.reports.slice(-200);
+        changed = true;
+        results.push({ mid, action: 'reported' });
+        reportedCount += 1;
+      } else {
+        results.push({ mid, action: 'duplicate' });
+        duplicateCount += 1;
+      }
+    } else {
+      if (doc.entries.length >= MAX_ENTRIES) {
+        fail(`黑名单已达上限 ${MAX_ENTRIES}，拒绝自动追加`);
+      }
+      const reason = reasonFromIssue(issueTitle, issueNumber);
+      doc.entries.push(buildEntry(mid, reason, issueNumber));
       changed = true;
-      action = 'reported';
+      results.push({ mid, action: 'added' });
+      addedCount += 1;
     }
-  } else {
-    if (doc.entries.length >= MAX_ENTRIES) {
-      fail(`黑名单已达上限 ${MAX_ENTRIES}，拒绝自动追加`);
-    }
-    const reason = reasonFromIssue(issueTitle, issueNumber);
-    const entry = buildEntry(mid, reason, issueNumber);
-    doc.entries.push(entry);
+  }
+
+  if (changed) {
     doc.entries.sort((a, b) => {
       if (a.mid.length !== b.mid.length) return a.mid.length - b.mid.length;
       return a.mid < b.mid ? -1 : a.mid > b.mid ? 1 : 0;
     });
-    changed = true;
-    action = 'added';
-  }
-
-  if (changed) {
     doc.version = Math.max(1, Number(doc.version) + 1);
     doc.updatedAt = new Date().toISOString();
 
@@ -180,37 +198,58 @@ function main() {
 
     writeJsonAtomic(BLACKLIST_FILE, recheck.doc);
 
-    appendChangelog(
-      recheck.doc.entries.find((entry) => entry.mid === mid),
-      issueNumber,
-      action
-    );
+    for (const result of results) {
+      if (result.action === 'duplicate') continue;
+      const entry = recheck.doc.entries.find((item) => item.mid === result.mid);
+      if (entry) appendChangelog(entry, issueNumber, result.action);
+    }
   }
 
+  const actions = [...new Set(results.map((result) => result.action))];
+  const action = actions.length === 1 ? actions[0] : 'mixed';
+  const midsText = mids.join(',');
+
   setOutput('changed', changed ? 'true' : 'false');
-  setOutput('mid', mid);
+  setOutput('mid', mids[0] || '');
+  setOutput('mids', midsText);
   setOutput('action', action);
   setOutput('count', doc.entries.length);
+  setOutput('added', addedCount);
+  setOutput('reported', reportedCount);
+  setOutput('duplicate', duplicateCount);
 
-  const actionText =
-    action === 'added'
+  const actionText = actions.length === 1
+    ? actions[0] === 'added'
       ? '新增黑名单条目'
-      : action === 'reported'
-        ? '已存在，补充 Issue 证据'
-        : '已存在且证据重复，黑名单未变更';
+      : actions[0] === 'reported'
+        ? '补充 Issue 证据'
+        : '重复上报，黑名单未变更'
+    : '混合结果';
 
-  console.log(`${actionText}: UID ${mid}`);
+  for (const result of results) {
+    const label = result.action === 'added'
+      ? '新增'
+      : result.action === 'reported'
+        ? '补充证据'
+        : '重复';
+    console.log(`${label}: UID ${result.mid}`);
+  }
+  console.log(`${actionText}，共 ${reports.length} 条`);
   console.log(`当前黑名单: ${formatSummary(doc)}`);
 
   appendSummary(
     [
       '### pkillFish 黑名单自动处理',
       '',
-      `- UID: \`${mid}\``,
-      `- 结果: ${actionText}`,
       `- Issue: #${issueNumber}`,
+      `- 处理: ${reports.length} 条`,
+      `- 新增: ${addedCount}；补充证据: ${reportedCount}；重复: ${duplicateCount}`,
       `- 当前规模: ${doc.entries.length} 条（revoked ${doc.revoked.length} 条）`,
       `- 新版本: ${doc.version}`,
+      '',
+      '| UID | 结果 |',
+      '|---|---|',
+      ...results.map((result) => `| \`${result.mid}\` | ${result.action} |`),
       ''
     ].join('\n')
   );

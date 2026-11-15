@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   extractCommentText,
   normalizeBilibiliLink,
+  parseBatchBlock,
   parseIssueBody,
   parseMetaBlock,
   reasonFromIssue
@@ -107,4 +108,83 @@ test('默认 Issue 标题退化为可读理由', () => {
     'DSH / 大肥鱼 Agent 评论（社区上报）'
   );
   assert.equal(reasonFromIssue('[fish-report] 批量模板评论', 12), '批量模板评论');
+});
+
+
+function makeBatchBody(items) {
+  return `<!-- pkillfish:batch
+${JSON.stringify(items)}
+-->
+
+### 批量上报（${items.length} 条）
+
+> 来自 pkillFish 左下角待上报面板。
+
+| # | UID | 昵称 | 评论链接 | 摘要 |
+|---|---|---|---|---|
+| 1 | \`123456789\` | test | [打开](https://www.bilibili.com/video/BV1GJ411x7h7/#reply1) | test |
+`;
+}
+
+test('解析批量 pkillfish:batch', () => {
+  const body = makeBatchBody([
+    {
+      mid: '123456789',
+      rpid: '111',
+      oid: '999',
+      type: '1',
+      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply111'
+    },
+    {
+      mid: '987654321',
+      rpid: '222',
+      oid: '999',
+      type: '1',
+      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply222'
+    }
+  ]);
+  const parsed = parseIssueBody(body);
+  assert.equal(parsed.ok, true, parsed.errors.join('\n'));
+  assert.equal(parsed.reports.length, 2);
+  assert.equal(parsed.reports[0].mid, '123456789');
+  assert.equal(parsed.reports[1].mid, '987654321');
+  assert.equal(parseBatchBlock(body).length, 2);
+});
+
+test('批量中重复 UID 合并并给出警告', () => {
+  const body = makeBatchBody([
+    {
+      mid: '123456789',
+      rpid: '111',
+      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply111'
+    },
+    {
+      mid: '123456789',
+      rpid: '222',
+      link: 'https://www.bilibili.com/video/BV1GJ411x7h7/#reply222'
+    }
+  ]);
+  const parsed = parseIssueBody(body);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.reports.length, 1);
+  assert.match(parsed.warnings.join('\n'), /重复/);
+});
+
+test('批量中非法链接会拒绝整批', () => {
+  const body = makeBatchBody([
+    {
+      mid: '123456789',
+      link: 'https://evil.example.com/video/BV1'
+    }
+  ]);
+  const parsed = parseIssueBody(body);
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.errors.join('\n'), /合法评论链接/);
+});
+
+test('旧版单条 Issue 仍返回 reports[0]', () => {
+  const parsed = parseIssueBody(makeBody());
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.reports.length, 1);
+  assert.equal(parsed.reports[0].mid, '123456789');
 });

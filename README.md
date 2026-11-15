@@ -45,7 +45,9 @@ pkillFish 不追求“把鱼杀光”的爽感。它追求的是：日常刷 B �
 - 支持新版 Web Component + open Shadow DOM 评论区，也保留旧版 `.reply-item` / 移动端 `.comment-item` 兜底。
 - 远端黑名单缓存、ETag 条件请求、增量合并、可配置更新间隔、离线模式。
 - 本地白名单优先级高于远端黑名单。
-- 每条评论的操作区有低调的“上报可疑鱼”文字按钮；只有点击时才打开 GitHub Issue 新建页。
+- 每条评论的操作区有低调的“上报可疑鱼”文字按钮；点击后加入左下角待上报面板，不会立刻联网。
+- 待上报面板支持勾选多条、一次提交到一个 Issue；默认单批最多 10 条。
+- Issue 支持 `pkillfish:batch` 批量格式，维护者可以在一张表里审阅多条 UID / 链接 / 摘要；旧的单条 `pkillfish:meta` 格式继续兼容。
 - 评论筛选区新增“已屏蔽肥鱼”按钮，紧挨“最热 | 最新”，只显示本页被屏蔽的评论；楼中楼命中时会把父评论一起带出来作为上下文。
 - 设置面板只有文字和开关：没有动画、没有声音、没有 emoji、没有鱼。
 - 调试日志只写到本地控制台，不发送到任何地方。
@@ -279,11 +281,32 @@ GitHub 的 Issue 新建页通过 URL 接收正文，而 URL 有长度限制。�
 
 上报仓库默认是 `OrO-c/pkillFish`，可以在设置里改成任意 `owner/repo` 或 GitHub URL。如果你 fork 或迁移了仓库，记得同步修改脚本顶部的 `DEFAULT_REPORT_REPO`。
 
+### 批量上报面板
+
+评论区肥鱼密集时，逐条开 Issue 很麻烦。现在点击“上报可疑鱼”只会把评论加入左下角的“待上报评论”面板：
+
+- 每条记录显示 UID、昵称、原文摘要和“打开评论”；
+- 每条前面有勾选框，默认选中；
+- 可以逐条移除，也可以“全选”；
+- 只有勾选了至少一条，才允许提交；没有勾选不会打开任何页面；
+- 一次默认最多提交 10 条，超过会提示减少勾选；
+- 提交时只打开一个 GitHub Issue 新建页，不会自动提交；
+- 队列保存在本机 GM 存储，刷新页面不会丢；
+- 提交后队列不会自动清空，确认 Issue 已提交后再点“清空”。
+
+批量 Issue 使用隐藏的 `pkillfish:batch` JSON 区块加一张可读表格：
+
+```text
+| # | UID | 昵称 | 评论链接 | 摘要 |
+```
+
+摘要为节选，完整评论请点链接。这样既控制 URL 长度，也方便维护者逐条打开核对。单批最多 10 条；更多评论请分批提交。
+
 隐私提醒：GitHub Issue 是公开的。只提交公开评论区信息，不要附上 Cookie、账号凭据、私信或任何个人隐私。
 
 ## GitHub 自动化流程
 
-`resolved` / `wontfix` 标签，或 Issue 的关闭原因，控制整个流程：
+一个 Issue 可以包含多条上报；`resolved` / `wontfix` 标签，或 Issue 的关闭原因，控制整个流程：
 
 ```text
 Issue 创建（report 标签）
@@ -325,12 +348,13 @@ Issue 创建（report 标签）
 - 只有对仓库有 `write` / `maintain` / `admin` 权限的操作者打标签或关闭 Issue 才会触发流程；`triage` 权限不够。
 - Issue 必须带有 `report` 标签（上报模板会自动添加），避免把普通讨论误送进自动化。
 - Issue 正文通过环境变量传入 Node 脚本，不拼接进 shell 命令。
-- 严格解析隐藏的 meta 区块，UID 必须是 1-19 位非零数字。
+- 严格解析隐藏的 `pkillfish:meta` 单条区块或 `pkillfish:batch` 批量区块；任意一条 UID / 链接不合法就拒绝整批，避免部分写入。
 - 链接必须是 `www.bilibili.com`、`m.bilibili.com` 或 `t.bilibili.com` 的评论页；`space.bilibili.com` 只用于兜底提取 UID，不能作为评论链接。
 - 评论原文不能为空，不能是模板占位符。
 - 写入前重新校验整份 `blacklist.json`：重复 UID、非法字段、`revoked` 冲突、超大文件都会失败。
 - `revoked` 中的 UID 不会被自动重新加入，必须人工处理。
 - 同一个 Issue 的多个事件用 `concurrency` 串行；不同 Issue 允许并行。推送冲突时，失败的任务会重置到最新 `main`，重新应用本 Issue，再重试推送，避免 GitHub 全局并发组取消合法的其他 Issue。
+- 一个 Issue 可以包含多条 UID；任意一条非法（包括在 `revoked` 中）都会拒绝整批，不做部分写入。
 - Issue 创建时模板会自动加 `report` 标签，这也会触发一次 `labeled` workflow，但 `authorize` 会把它跳过。这个 skipped run 是正常的，不代表流程失败。
 - 关闭 Issue 时：`completed` 视为通过，`not planned` 视为不通过；如果关闭人没有 write/maintain/admin 权限，会自动跳过。
 - 如果关闭多个 Issue 时看到 `Canceling since a higher priority waiting request`，那是旧版全局并发组的行为；新版已改成按 Issue 分组，正常情况下不会再互相取消。

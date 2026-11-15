@@ -139,7 +139,7 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          MID: ${{ steps.apply.outputs.mid }}
+          MIDS: ${{ steps.apply.outputs.mids }}
         run: |
           set -euo pipefail
           git config user.name "pkillFish-bot"
@@ -163,7 +163,7 @@ jobs:
               exit 0
             fi
 
-            git commit -m "chore(blacklist): update UID ${MID} (#${ISSUE_NUMBER})"
+            git commit -m "chore(blacklist): update UIDs ${MIDS} (#${ISSUE_NUMBER})"
             if git push origin HEAD:main; then
               echo "push 成功"
               exit 0
@@ -179,26 +179,25 @@ jobs:
         if: success()
         uses: actions/github-script@v7
         env:
-          ACTION: ${{ steps.apply.outputs.action }}
-          MID: ${{ steps.apply.outputs.mid }}
+          MIDS: ${{ steps.apply.outputs.mids }}
           COUNT: ${{ steps.apply.outputs.count }}
           CHANGED: ${{ steps.apply.outputs.changed }}
+          ADDED: ${{ steps.apply.outputs.added }}
+          REPORTED: ${{ steps.apply.outputs.reported }}
+          DUPLICATE: ${{ steps.apply.outputs.duplicate }}
         with:
           script: |
-            const action = process.env.ACTION;
-            const mid = process.env.MID;
+            const mids = process.env.MIDS || '';
             const count = process.env.COUNT;
             const changed = process.env.CHANGED === 'true';
-            const actionText = action === 'added'
-              ? '已新增到黑名单'
-              : action === 'reported'
-                ? '该 UID 已在黑名单，已补充本次 Issue 证据'
-                : '该 UID 已在黑名单且证据重复';
+            const added = process.env.ADDED || '0';
+            const reported = process.env.REPORTED || '0';
+            const duplicate = process.env.DUPLICATE || '0';
             const body = [
               '### pkillFish 自动处理完成',
               '',
-              `- 结果：${actionText}`,
-              `- UID：\`${mid}\``,
+              `- 处理 UID：\`${mids}\``,
+              `- 新增：${added}；补充证据：${reported}；重复：${duplicate}`,
               `- 黑名单当前规模：${count} 条`,
               `- 本次是否写入：${changed ? '是' : '否'}`,
               '',
@@ -238,7 +237,7 @@ jobs:
               '',
               '本次没有写入黑名单。可能原因：',
               '',
-              '- Issue 正文缺少 `pkillfish:meta` 区块，或 UID / 链接 / 原文格式不合法；',
+              '- Issue 正文缺少 `pkillfish:meta` 或 `pkillfish:batch` 区块，或 UID / 链接 / 原文格式不合法；',
               '- `blacklist.json` 现有内容未通过校验；',
               '- UID 位于 `revoked` 列表，需要人工复核；',
               '- 分支保护拒绝了直接推送。',

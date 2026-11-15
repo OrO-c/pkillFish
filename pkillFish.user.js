@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.1.4
+// @version      1.2.0
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.1.4';
+  const VERSION = '1.2.0';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -87,6 +87,8 @@
   };
 
   const BLACKLIST_SCHEMA = 1;
+  const MAX_BATCH_REPORTS = 10;
+  const MAX_REPORT_QUEUE = 50;
   const MID_RE = /^[1-9]\d{0,18}$/;
   const RPID_RE = /^[1-9]\d{0,18}$/;
 
@@ -631,6 +633,7 @@
       whitelist: { mids: [], rpids: [], fingerprints: [] },
       stats: { total: 0, blacklist: 0, rules: 0, model: 0, byDay: {} },
       log: [],
+      reportQueue: [],
       migrations: {
         broadNicknameRemoved: false,
         broadRemoteNicknameRemoved: false
@@ -791,6 +794,36 @@
     return out;
   }
 
+  function sanitizeReportQueue(input) {
+    if (!Array.isArray(input)) return [];
+    const out = [];
+    const seen = Object.create(null);
+    for (let i = 0; i < input.length && out.length < MAX_REPORT_QUEUE; i += 1) {
+      const item = input[i];
+      if (!isPlainObject(item)) continue;
+      const mid = digitsOnly(item.mid);
+      const link = cleanText(item.link, 500, false);
+      if (!mid || !link || !isBilibiliCommentUrl(link)) continue;
+      const key = mid + '|' + (digitsOnly(item.rpid) || fnv1a(cleanText(item.text, 500, true)));
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push({
+        id: cleanText(item.id, 40, false) || 'q-' + i,
+        key: key,
+        mid: mid,
+        rpid: digitsOnly(item.rpid),
+        oid: digitsOnly(item.oid),
+        type: digitsOnly(item.type),
+        link: link,
+        uname: cleanText(item.uname, 80, false),
+        text: cleanText(item.text, 500, true),
+        selected: item.selected !== false,
+        queuedAt: clampInt(item.queuedAt, 0, 9999999999999, 0)
+      });
+    }
+    return out;
+  }
+
   function loadState() {
     const raw = gmGet(STORAGE.state, null);
     const saved = safeJsonParse(raw);
@@ -804,6 +837,7 @@
       state.whitelist = sanitizeWhitelist(saved.whitelist);
       state.stats = sanitizeStats(saved.stats);
       state.log = sanitizeLog(saved.log);
+      state.reportQueue = sanitizeReportQueue(saved.reportQueue);
       if (isPlainObject(saved.migrations)) {
         state.migrations.broadNicknameRemoved =
           saved.migrations.broadNicknameRemoved === true;
@@ -838,6 +872,7 @@
       whitelist: state.whitelist,
       stats: state.stats,
       log: state.log,
+      reportQueue: state.reportQueue,
       migrations: state.migrations
     };
   }
@@ -2162,7 +2197,7 @@
     button.type = 'button';
     button.setAttribute('data-pf-report', '1');
     button.textContent = '上报可疑鱼';
-    button.title = '在新标签页打开 GitHub Issue，由你确认后提交';
+    button.title = '加入左下角待上报面板，稍后批量提交';
     button.style.cssText =
       'all:unset;display:inline-block;cursor:pointer;color:#8a8a8a;font-size:12px;' +
       'line-height:1.6;margin-left:8px;font-family:inherit;';
@@ -2170,7 +2205,7 @@
     button.addEventListener('click', function (event) {
       event.preventDefault();
       event.stopPropagation();
-      openReport(candidate);
+      enqueueReport(candidate);
     });
 
     parent.appendChild(button);
@@ -3301,6 +3336,37 @@
       resize: vertical; color: #111; background: #fff; border-radius: 2px;
       max-width: 100%;
     }
+    .pf-queue {
+      position: fixed; left: 14px; bottom: 14px; z-index: 2147483644;
+      width: 330px; max-width: calc(100vw - 28px); max-height: 46vh;
+      background: #fff; color: #1a1a1a; border: 1px solid #b8b8b8;
+      border-radius: 2px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+      display: flex; flex-direction: column;
+      font: 12px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "Microsoft YaHei", sans-serif; text-align: left;
+    }
+    .pf-queue-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-bottom: 1px solid #e3e3e3;
+      font-weight: 600;
+    }
+    .pf-queue-head .pf-linkbtn { margin-left: auto; font-weight: 400; }
+    .pf-queue-list { overflow-y: auto; overflow-x: hidden; padding: 0 9px; }
+    .pf-queue-item { padding: 6px 0; border-bottom: 1px solid #eee; }
+    .pf-queue-item:last-child { border-bottom: 0; }
+    .pf-queue-meta { color: #555; font-size: 11px; }
+    .pf-queue-text {
+      margin: 2px 0; max-height: 3.2em; overflow: hidden;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .pf-queue-actions { display: flex; gap: 8px; align-items: center; }
+    .pf-queue-actions .pf-linkbtn { color: #777; }
+    .pf-queue-foot {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-top: 1px solid #eee;
+    }
+    .pf-queue-foot .pf-btn { margin-left: auto; }
+    .pf-queue-notice { padding: 0 9px 7px; }
     .pf-foot {
       padding: 6px 10px; border-top: 1px solid #eee;
       color: #777; font-size: 11px;
@@ -3433,6 +3499,19 @@
 
       <div class="pf-foot">仅本地运行。不调用 B 站 API，不上传评论。</div>
     </section>
+
+    <section id="pf-queue" class="pf-queue" hidden aria-label="待上报评论">
+      <div class="pf-queue-head">
+        <span>待上报评论 <span id="pf-queue-count">0</span></span>
+        <button id="pf-queue-clear" class="pf-linkbtn" type="button">清空</button>
+      </div>
+      <div id="pf-queue-list" class="pf-queue-list"></div>
+      <div class="pf-queue-foot">
+        <label class="pf-check"><input type="checkbox" id="pf-queue-all"> 全选</label>
+        <button id="pf-queue-submit" class="pf-btn" type="button">提交选中</button>
+      </div>
+      <div id="pf-queue-notice" class="pf-note pf-queue-notice"></div>
+    </section>
   `;
 
   function q(selector) {
@@ -3504,11 +3583,19 @@
       reset: shadow.querySelector('#pf-reset'),
       clearStats: shadow.querySelector('#pf-clear-stats'),
       clearLog: shadow.querySelector('#pf-clear-log'),
-      logList: shadow.querySelector('#pf-log-list')
+      logList: shadow.querySelector('#pf-log-list'),
+      queue: shadow.querySelector('#pf-queue'),
+      queueCount: shadow.querySelector('#pf-queue-count'),
+      queueList: shadow.querySelector('#pf-queue-list'),
+      queueAll: shadow.querySelector('#pf-queue-all'),
+      queueSubmit: shadow.querySelector('#pf-queue-submit'),
+      queueClear: shadow.querySelector('#pf-queue-clear'),
+      queueNotice: shadow.querySelector('#pf-queue-notice')
     };
 
     bindUI();
     renderSettings();
+    renderReportQueue();
     refreshUI();
     return ui;
   }
@@ -3599,6 +3686,54 @@
       refreshUI();
       scheduleFilterRefresh();
       setNotice('日志已清空。');
+    });
+
+    ui.queueAll.addEventListener('change', function () {
+      const selected = !!ui.queueAll.checked;
+      for (let i = 0; i < state.reportQueue.length; i += 1) {
+        state.reportQueue[i].selected = selected;
+      }
+      saveState();
+      renderReportQueue();
+    });
+
+    ui.queueSubmit.addEventListener('click', function () {
+      submitSelectedReports();
+    });
+
+    ui.queueClear.addEventListener('click', function () {
+      if (!state.reportQueue.length) return;
+      if (!window.confirm('清空待上报列表？已经提交到 GitHub 的内容不受影响。')) return;
+      state.reportQueue = [];
+      saveState(true);
+      renderReportQueue();
+    });
+
+    ui.queueList.addEventListener('change', function (event) {
+      const target = event.target;
+      if (!target || target.getAttribute('data-queue-select') === null) return;
+      const id = target.getAttribute('data-queue-select');
+      const item = state.reportQueue.find(function (entry) {
+        return entry.id === id;
+      });
+      if (!item) return;
+      item.selected = !!target.checked;
+      saveState();
+      updateQueueControls();
+    });
+
+    ui.queueList.addEventListener('click', function (event) {
+      const target = event.target;
+      if (!target || !target.getAttribute) return;
+      const id = target.getAttribute('data-queue-remove');
+      if (!id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.reportQueue = state.reportQueue.filter(function (entry) {
+        return entry.id !== id;
+      });
+      saveState();
+      renderReportQueue();
     });
 
     document.addEventListener(
@@ -3916,6 +4051,288 @@
     setNotice('白名单已清空。');
   }
 
+  function isBilibiliCommentUrl(value) {
+    try {
+      const url = new URL(String(value));
+      return (
+        url.protocol === 'https:' &&
+        /(^|\.)bilibili\.com$/i.test(url.hostname) &&
+        url.pathname !== '/'
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setQueueNotice(text, isError) {
+    if (!ui || !ui.queueNotice) return;
+    ui.queueNotice.textContent = String(text || '');
+    ui.queueNotice.className = 'pf-note pf-queue-notice' + (isError ? ' pf-error' : '');
+  }
+
+  function updateQueueControls() {
+    if (!ui || !state) return;
+    const total = state.reportQueue.length;
+    const selected = state.reportQueue.filter(function (item) {
+      return item.selected !== false;
+    }).length;
+
+    ui.queue.hidden = total === 0;
+    ui.queueCount.textContent = String(total);
+    ui.queueSubmit.textContent = '提交选中 (' + selected + ')';
+    ui.queueSubmit.disabled = selected === 0;
+    ui.queueAll.checked = total > 0 && selected === total;
+    ui.queueAll.indeterminate = selected > 0 && selected < total;
+  }
+
+  function renderReportQueue() {
+    if (!ui || !state) return;
+    const list = ui.queueList;
+    while (list.firstChild) list.removeChild(list.firstChild);
+
+    if (!state.reportQueue.length) {
+      updateQueueControls();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < state.reportQueue.length; i += 1) {
+      const item = state.reportQueue[i];
+      const row = document.createElement('div');
+      row.className = 'pf-queue-item';
+
+      const label = document.createElement('label');
+      label.className = 'pf-check';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = item.selected !== false;
+      checkbox.setAttribute('data-queue-select', item.id);
+      label.appendChild(checkbox);
+
+      const meta = document.createElement('span');
+      meta.className = 'pf-queue-meta';
+      meta.textContent =
+        'UID ' + item.mid + (item.uname ? ' · ' + item.uname : '');
+      label.appendChild(meta);
+      row.appendChild(label);
+
+      const text = document.createElement('div');
+      text.className = 'pf-queue-text';
+      text.textContent = item.text || '（无文本）';
+      row.appendChild(text);
+
+      const actions = document.createElement('div');
+      actions.className = 'pf-queue-actions';
+
+      const open = document.createElement('a');
+      open.href = item.link;
+      open.target = '_blank';
+      open.rel = 'noopener noreferrer';
+      open.className = 'pf-linkbtn';
+      open.textContent = '打开评论';
+      actions.appendChild(open);
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'pf-linkbtn';
+      remove.setAttribute('data-queue-remove', item.id);
+      remove.textContent = '移除';
+      actions.appendChild(remove);
+
+      row.appendChild(actions);
+      fragment.appendChild(row);
+    }
+
+    list.appendChild(fragment);
+    updateQueueControls();
+  }
+
+  function enqueueReport(candidate) {
+    if (!candidate) return;
+    const resolved = resolvePageMeta(candidate);
+    const mid = digitsOnly(resolved.mid);
+    const link = resolved ? commentPermalink(resolved) : '';
+
+    if (!mid) {
+      setQueueNotice('无法获取该评论的 UID，暂时不能上报。', true);
+      return;
+    }
+    if (!isBilibiliCommentUrl(link)) {
+      setQueueNotice('评论链接无效，暂时不能上报。', true);
+      return;
+    }
+
+    const rpid = digitsOnly(resolved.rpid);
+    const key = mid + '|' + (rpid || fingerprintOf(resolved));
+    if (
+      state.reportQueue.some(function (item) {
+        return item.key === key;
+      })
+    ) {
+      setQueueNotice('这条评论已经在待上报列表里。');
+      if (ui) ui.queue.hidden = false;
+      return;
+    }
+    if (state.reportQueue.length >= MAX_REPORT_QUEUE) {
+      setQueueNotice('待上报列表已满（' + MAX_REPORT_QUEUE + ' 条），请先提交或清空。', true);
+      if (ui) ui.queue.hidden = false;
+      return;
+    }
+
+    const item = {
+      id: 'q-' + Date.now().toString(36) + '-' + (state.reportQueue.length + 1).toString(36),
+      key: key,
+      mid: mid,
+      rpid: rpid,
+      oid: digitsOnly(resolved.oid),
+      type: digitsOnly(resolved.type),
+      link: link,
+      uname: cleanText(resolved.uname || '', 80, false),
+      text: cleanText(resolved.text || '', 500, true),
+      selected: true,
+      queuedAt: Date.now()
+    };
+
+    state.reportQueue.push(item);
+    saveState();
+    renderReportQueue();
+    if (ui) ui.queue.hidden = false;
+    setQueueNotice('已加入待上报列表，可继续勾选后一次提交。');
+  }
+
+  function markdownCell(value, maxLength) {
+    return cleanText(value || '', maxLength === undefined ? 200 : maxLength, false)
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ');
+  }
+
+  function buildBatchIssueUrl(items) {
+    const repo = normalizeRepo(settings.reportRepo);
+    if (!repo) return { error: '上报仓库地址无效，请填写 owner/repo。' };
+    if (!items.length) return { error: '请先勾选要提交的评论。' };
+    if (items.length > MAX_BATCH_REPORTS) {
+      return { error: '一次最多提交 ' + MAX_BATCH_REPORTS + ' 条，请减少勾选。' };
+    }
+
+    const reports = items.map(function (item) {
+      return {
+        mid: digitsOnly(item.mid),
+        rpid: digitsOnly(item.rpid),
+        oid: digitsOnly(item.oid),
+        type: digitsOnly(item.type),
+        link: item.link
+      };
+    });
+    if (
+      reports.some(function (report) {
+        return !report.mid || !isBilibiliCommentUrl(report.link);
+      })
+    ) {
+      return { error: '待上报列表中存在无效 UID 或链接，请先移除。' };
+    }
+
+    const meta = '<!-- pkillfish:batch\n' + JSON.stringify(reports) + '\n-->';
+    const title = '[fish-report] 批量可疑评论（' + items.length + ' 条）';
+
+    function composeBody(excerptLength) {
+      const rows = items.map(function (item, index) {
+        const link = item.link;
+        const nickname = markdownCell(item.uname || '未知', 60);
+        const excerpt = excerptLength > 0
+          ? markdownCell(item.text || '', excerptLength)
+          : '（见评论链接）';
+        return (
+          '| ' +
+          (index + 1) +
+          ' | `' +
+          item.mid +
+          '` | ' +
+          nickname +
+          ' | [打开](' +
+          link +
+          ') | ' +
+          excerpt +
+          ' |'
+        );
+      });
+
+      return [
+        meta,
+        '',
+        '### 批量上报（' + items.length + ' 条）',
+        '',
+        '> 来自 pkillFish 左下角待上报面板。摘要为节选，完整评论请点评论链接。',
+        '>',
+        '> 提交后不会自动加入黑名单。维护者审核后打 `resolved` 或关闭为 `completed` 才会加入；打 `wontfix` 或关闭为 `not planned` 表示不加入。',
+        '',
+        '| # | UID | 昵称 | 评论链接 | 摘要 |',
+        '|---|---|---|---|---|',
+        rows.join('\n'),
+        '',
+        '### 判断依据',
+        '',
+        '- [ ] 批量 / 模板化评论',
+        '- [ ] 捏造事实、答非所问或与视频无关',
+        '- [ ] 昵称、头像或话术指向 DSH / 大肥鱼 Agent',
+        '',
+        '### 确认',
+        '',
+        '- [ ] 我只提交了公开评论信息，没有提交任何账号凭据或隐私数据',
+        '- [ ] 我理解该 Issue 是公开的，并同意按项目黑名单流程审核'
+      ].join('\n');
+    }
+
+    let excerptLength = 80;
+    let lastUrl = '';
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const params = new URLSearchParams();
+      params.set('labels', 'report');
+      params.set('title', title);
+      params.set('body', composeBody(excerptLength));
+      lastUrl = 'https://github.com/' + repo + '/issues/new?' + params.toString();
+      if (lastUrl.length <= 7200) break;
+      excerptLength = Math.max(0, excerptLength - 20);
+    }
+
+    if (lastUrl.length > 7200) {
+      return {
+        error: '所选评论过多，生成的上报链接过长，请减少勾选后重试。'
+      };
+    }
+    return { url: lastUrl };
+  }
+
+  function submitSelectedReports() {
+    if (!state) return;
+    const selected = state.reportQueue.filter(function (item) {
+      return item.selected !== false;
+    });
+    if (!selected.length) {
+      setQueueNotice('请先勾选要提交的评论。', true);
+      return;
+    }
+    if (selected.length > MAX_BATCH_REPORTS) {
+      setQueueNotice('一次最多提交 ' + MAX_BATCH_REPORTS + ' 条，请减少勾选。', true);
+      return;
+    }
+
+    const built = buildBatchIssueUrl(selected);
+    if (built.error) {
+      setQueueNotice(built.error, true);
+      if (built.error.indexOf('仓库') !== -1) openPanel('settings');
+      return;
+    }
+
+    const ok = gmOpenTab(built.url);
+    if (!ok) {
+      setQueueNotice('浏览器拦截了新标签页，请允许弹窗后重试。', true);
+      return;
+    }
+    setQueueNotice(
+      '已打开 GitHub Issue 新建页。确认提交后，可以点“清空”移除这些条目。'
+    );
+  }
+
   function renderLog() {
     if (!ui || !state) return;
     const list = ui.logList;
@@ -4062,6 +4479,7 @@
     active = true;
     ensureUI();
     if (ui && ui.launcher) ui.launcher.hidden = false;
+    renderReportQueue();
 
     startDocumentObserver();
     scheduleInitialScans();
@@ -4097,6 +4515,7 @@
     stopObservers();
     closePanel();
     if (ui && ui.launcher) ui.launcher.hidden = true;
+    if (ui && ui.queue) ui.queue.hidden = true;
     resetPageState();
     debug('stopped');
   }

@@ -17,6 +17,7 @@ const ALLOWED_HOSTS = new Set([
 
 const MAX_BODY = 30000;
 const MAX_COMMENT = 20000;
+const MAX_BATCH_REPORTS = 30;
 
 export function parseMetaBlock(body) {
   const text = String(body == null ? '' : body);
@@ -34,6 +35,25 @@ export function parseMetaBlock(body) {
     if (/^[a-z][a-z0-9_]{0,20}$/.test(key)) meta[key] = value;
   }
   return meta;
+}
+
+export function parseBatchBlock(body) {
+  const text = String(body == null ? '' : body);
+  const match = text.match(/<!--\s*pkillfish:batch\s*([\s\S]*?)-->/i);
+  if (!match) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(match[1].trim());
+  } catch (error) {
+    throw new Error(`pkillfish:batch JSON 解析失败：${error.message}`);
+  }
+  if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.reports)) {
+    parsed = parsed.reports;
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('pkillfish:batch 必须是数组');
+  }
+  return parsed;
 }
 
 export function normalizeBilibiliLink(value) {
@@ -79,13 +99,90 @@ export function isPlaceholderComment(text) {
  */
 export function parseIssueBody(body) {
   const errors = [];
+  const warnings = [];
   const raw = String(body == null ? '' : body);
-  const meta = parseMetaBlock(raw);
 
   if (raw.length > MAX_BODY) {
     errors.push(`Issue 正文超过 ${MAX_BODY} 字符上限`);
   }
+  if (raw.length < 80) {
+    errors.push('Issue 正文过短，拒绝自动处理');
+  }
 
+  let batch = null;
+  try {
+    batch = parseBatchBlock(raw);
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  if (batch) {
+    if (batch.length === 0) {
+      errors.push('批量上报为空');
+    }
+    if (batch.length > MAX_BATCH_REPORTS) {
+      errors.push(`批量上报超过 ${MAX_BATCH_REPORTS} 条上限`);
+    }
+
+    const reports = [];
+    const seen = new Set();
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      if (!item || typeof item !== 'object') {
+        errors.push(`批量上报第 ${i + 1} 条不是对象`);
+        continue;
+      }
+      const mid = cleanString(String(item.mid == null ? '' : item.mid), 20);
+      const rpid = cleanString(String(item.rpid == null ? '' : item.rpid), 20);
+      const oid = cleanString(String(item.oid == null ? '' : item.oid), 20);
+      const type = cleanString(String(item.type == null ? '' : item.type), 8);
+      const link = normalizeBilibiliLink(item.link || '');
+
+      if (!MID_RE.test(mid)) {
+        errors.push(`批量上报第 ${i + 1} 条 UID 无效`);
+        continue;
+      }
+      if (rpid && !/^[1-9]\d{0,18}$/.test(rpid)) {
+        errors.push(`批量上报第 ${i + 1} 条 rpid 无效`);
+        continue;
+      }
+      if (oid && !/^[1-9]\d{0,18}$/.test(oid)) {
+        errors.push(`批量上报第 ${i + 1} 条 oid 无效`);
+        continue;
+      }
+      if (type && !/^\d{1,3}$/.test(type)) {
+        errors.push(`批量上报第 ${i + 1} 条 type 无效`);
+        continue;
+      }
+      if (!link) {
+        errors.push(`批量上报第 ${i + 1} 条缺少合法评论链接`);
+        continue;
+      }
+      if (seen.has(mid)) {
+        warnings.push(`批量上报第 ${i + 1} 条与前面的 UID ${mid} 重复，已合并`);
+        continue;
+      }
+      seen.add(mid);
+      reports.push({ uid: mid, mid, rpid, oid, type, link });
+    }
+
+    if (!reports.length) {
+      errors.push('批量上报中没有可用的 UID');
+    }
+
+    const first = reports[0] || { uid: '', mid: '', rpid: '', oid: '', type: '', link: '' };
+    return {
+      ok: errors.length === 0,
+      errors,
+      warnings,
+      meta: first,
+      reports,
+      commentText: ''
+    };
+  }
+
+  // 兼容旧版单条 Issue：pkillfish:meta + 可疑评论原文。
+  const meta = parseMetaBlock(raw);
   let uid = cleanString(meta.uid || '', 20);
   let mid = cleanString(meta.mid || '', 20);
   const rpid = cleanString(meta.rpid || '', 20);
@@ -93,7 +190,6 @@ export function parseIssueBody(body) {
   const type = cleanString(meta.type || '', 8);
 
   let link = normalizeBilibiliLink(meta.link || '');
-
   if (!link) {
     const candidates = raw.match(/https?:\/\/(?:www|m|t|space)\.bilibili\.com\/[^\s)<>"']+/gi) || [];
     for (const candidate of candidates) {
@@ -130,7 +226,6 @@ export function parseIssueBody(body) {
   if (rpid && !/^[1-9]\d{0,18}$/.test(rpid)) errors.push('rpid 格式无效');
   if (oid && !/^[1-9]\d{0,18}$/.test(oid)) errors.push('oid 格式无效');
   if (type && !/^\d{1,3}$/.test(type)) errors.push('type 格式无效');
-
   if (!link) errors.push('缺少合法的 B 站评论链接');
 
   const commentText = extractCommentText(raw);
@@ -138,21 +233,21 @@ export function parseIssueBody(body) {
     errors.push('缺少评论原文');
   }
 
-  if (raw.length < 80) {
-    errors.push('Issue 正文过短，拒绝自动处理');
-  }
+  const report = {
+    uid: uid || finalMid,
+    mid: finalMid,
+    rpid,
+    oid,
+    type,
+    link
+  };
 
   return {
     ok: errors.length === 0,
     errors,
-    meta: {
-      uid: uid || finalMid,
-      mid: finalMid,
-      rpid,
-      oid,
-      type,
-      link
-    },
+    warnings,
+    meta: report,
+    reports: errors.length === 0 || finalMid ? [report] : [],
     commentText
   };
 }
