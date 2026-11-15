@@ -1,8 +1,17 @@
 {
   "schemaVersion": 1,
-  "version": 2,
-  "updatedAt": "2026-11-15T08:30:00.000Z",
-  "entries": [],
+  "version": 3,
+  "updatedAt": "2026-11-15T08:54:32.655Z",
+  "entries": [
+    {
+      "mid": "3546914786117920",
+      "reason": "DSH / 大肥鱼 Agent 评论（社区上报）",
+      "addedAt": "2026-11-15T08:54:32.655Z",
+      "reports": [
+        1
+      ]
+    }
+  ],
   "revoked": [],
   "rules": {
     "nicknameKeywords": [
