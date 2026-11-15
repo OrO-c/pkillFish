@@ -16,7 +16,9 @@ permissions:
   issues: write
 
 concurrency:
-  group: pkillfish-blacklist-main
+  # 同一个 Issue 的事件串行；不同 Issue 允许并行。
+  # 并行写入的冲突由提交步骤的“重置到最新 main 再重放”重试解决。
+  group: pkillfish-blacklist-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
@@ -105,7 +107,7 @@ jobs:
       needs.authorize.outputs.decision == 'resolved' &&
       github.event.issue.pull_request == null
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -133,19 +135,45 @@ jobs:
       - name: Commit and push to main
         if: steps.apply.outputs.changed == 'true'
         env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           MID: ${{ steps.apply.outputs.mid }}
         run: |
+          set -euo pipefail
           git config user.name "pkillFish-bot"
           git config user.email "pkillfish-bot@users.noreply.github.com"
-          git add blacklist.json docs/blacklist-changelog.md
-          if git diff --cached --quiet; then
-            echo "没有需要提交的变更"
-            exit 0
-          fi
-          git commit -m "chore(blacklist): update UID ${MID} (#${ISSUE_NUMBER})"
-          git pull --rebase origin main
-          git push origin HEAD:main
+
+          # 不用全局 concurrency 排队（GitHub 只保留一个 pending，会把合法的
+          # 其他 Issue 取消）。不同 Issue 并行处理，推送冲突时重置到最新 main
+          # 重新解析本 Issue，再重试推送。
+          for attempt in 1 2 3 4 5; do
+            if [ "$attempt" -gt 1 ]; then
+              echo "push 冲突，第 ${attempt} 次重试：同步 main 并重新应用本 Issue"
+              git fetch origin main
+              git reset --hard origin/main
+              node scripts/apply-report.mjs
+              node scripts/validate-blacklist.mjs blacklist.json
+            fi
+
+            git add blacklist.json docs/blacklist-changelog.md
+            if git diff --cached --quiet; then
+              echo "没有需要提交的变更"
+              exit 0
+            fi
+
+            git commit -m "chore(blacklist): update UID ${MID} (#${ISSUE_NUMBER})"
+            if git push origin HEAD:main; then
+              echo "push 成功"
+              exit 0
+            fi
+
+            sleep $((attempt * 2))
+          done
+
+          echo "连续 5 次推送失败，请检查分支保护或网络" >&2
+          exit 1
 
       - name: Comment success
         if: success()
