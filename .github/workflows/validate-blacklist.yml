@@ -1,0 +1,43 @@
+name: validate-blacklist
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'blacklist.json'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'pkillFish.user.js'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'blacklist.json'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'pkillFish.user.js'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check userscript syntax
+        run: node --check pkillFish.user.js
+
+      - name: Validate blacklist
+        run: node scripts/validate-blacklist.mjs blacklist.json
+
+      - name: Run unit tests
+        run: node --test tests/*.test.mjs
