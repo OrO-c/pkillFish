@@ -41,9 +41,10 @@ python ml/scrape_aicu.py \
 默认行为：
 
 - 只处理 `blacklist.json` 中的 UID，跳过 `revoked`；
-- 只保留 **2026-10-01（Asia/Shanghai）之后**的评论作为正样本；
-- 评论分页抓取，遇到早于 2026-10 的页后停止；
-- 输出 `ml/data/positives.jsonl`；
+- **这些账号在 2026-10-01（Asia/Shanghai）之后发布的评论，不论内容，全部作为正样本**；
+- 输出到 `ml/data/positives.jsonl`，每行 `label: 1`；
+- 评论分页抓取，默认一直抓到接口结束或早于 2026-10 的页；
+- `--max-pages 0` 是默认值，表示不设页数上限；
 - 原始接口响应保存在 `ml/data/raw/`，便于排查。
 
 ### aicu 接口
@@ -73,7 +74,7 @@ python ml/scrape_aicu.py \
   --max-pages 10
 ```
 
-该选项会把 2026-10 之前的评论写入 `negatives.jsonl`，作为同一账号人类时期的 hard negative。它不是默认行为，因为默认采集范围严格限定为 2026-10 之后。
+该选项会把 2026-10 之前的评论写入 `negatives.jsonl`，标记 `label: 0`，作为同一账号人类时期的 hard negative。它不是默认行为，因为默认采集范围严格限定为 2026-10 之后。
 
 也可以把其他来源的公开人类评论整理成：
 
@@ -81,7 +82,7 @@ python ml/scrape_aicu.py \
 {"uid":"123456","rpid":"111","text":"...","ctime":"2026-10-10T12:00:00+08:00","label":0}
 ```
 
-训练只读取 `text`、`uid`、`label` 和 `ctime`；不会把 UID 当作特征。
+训练只读取 `text`、`uid`、`label` 和 `ctime`；不会把 UID 当作特征。正样本判定只看“账号 + 发布时间”，不按评论内容筛选。
 
 ## 训练
 

@@ -11,7 +11,8 @@
 注意：
   - 每次 getreply 前都要重新 enqueue 获取 ticket；ticket 是一次性的。
   - 本脚本不登录、不提交 Cookie，只读取公开评论。
-  - 默认只保留 2026-10-01（Asia/Shanghai）之后的评论。
+  - 黑名单账号在 2026-10-01（Asia/Shanghai）之后发布的评论，不论内容，
+    全部作为正样本（label=1）。
   - 默认不采集 2026-10 之前的评论；如果确实需要负样本，可显式
     使用 --include-before-as-negatives。这些是同一账号人类使用时期的评论，
     适合做 hard negative，但会额外采集旧数据。
@@ -200,7 +201,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少个 UID")
     parser.add_argument("--since", default=DEFAULT_SINCE)
     parser.add_argument("--include-before-as-negatives", action="store_true")
-    parser.add_argument("--max-pages", type=int, default=20)
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=0,
+        help="最多抓多少页；0 表示一直抓到接口结束或早于 since",
+    )
     parser.add_argument("--delay", type=float, default=2.5)
     parser.add_argument("--headful", action="store_true")
     parser.add_argument("--timeout-ms", type=int, default=60000)
@@ -236,7 +242,10 @@ def main() -> int:
             raw_dir.mkdir(parents=True, exist_ok=True)
             comments: list[dict[str, Any]] = []
 
-            for page_number in range(1, max(1, args.max_pages) + 1):
+            page_number = 1
+            while True:
+                if args.max_pages > 0 and page_number > args.max_pages:
+                    break
                 payload: dict[str, Any] = {}
                 for attempt in range(3):
                     try:
@@ -271,6 +280,8 @@ def main() -> int:
                         continue
                     row = normalize_reply(item, uid)
                     if row:
+                        created = parse_time(row["ctime"])
+                        row["label"] = 1 if created and created >= since else 0
                         page_rows.append(row)
                         comments.append(row)
 
@@ -281,6 +292,7 @@ def main() -> int:
                 if oldest and oldest < since and not args.include_before_as_negatives:
                     break
                 time.sleep(args.delay)
+                page_number += 1
 
             positives: list[dict[str, Any]] = []
             negatives: list[dict[str, Any]] = []
@@ -291,9 +303,11 @@ def main() -> int:
                 key = (row["uid"], row["rpid"], row["text_sha1"])
                 if created >= since:
                     if key not in positive_keys:
+                        row["label"] = 1
                         positives.append(row)
                         positive_keys.add(key)
                 elif args.include_before_as_negatives and key not in negative_keys:
+                    row["label"] = 0
                     negatives.append(row)
                     negative_keys.add(key)
 
