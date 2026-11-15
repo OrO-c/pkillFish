@@ -1,15 +1,15 @@
 name: auto-blacklist
 
-# 维护者用标签控制流程：
-#   resolved -> 校验 Issue -> 追加 blacklist.json -> 提交到 main -> 关闭 Issue
-#   wontfix  -> 不修改黑名单 -> 回复说明 -> 关闭 Issue
+# 维护者用标签或关闭原因控制流程：
+#   resolved / Close as completed   -> 校验 Issue -> 追加 blacklist.json -> 提交到 main
+#   wontfix  / Close as not planned -> 不修改黑名单 -> 回复说明
 #
-# 只有拥有 write / maintain / admin 权限的操作者打的标签才会被处理。
+# 只有拥有 write / maintain / admin 权限的操作者触发的流程才会被处理。
 # 所有解析都在 Node 脚本内完成，Issue 内容不会进入 shell。
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, closed]
 
 permissions:
   contents: write
@@ -23,7 +23,12 @@ jobs:
   authorize:
     if: >-
       github.event.issue.pull_request == null &&
-      (github.event.label.name == 'resolved' || github.event.label.name == 'wontfix')
+      (
+        (github.event.action == 'labeled' &&
+          (github.event.label.name == 'resolved' ||
+           github.event.label.name == 'wontfix')) ||
+        github.event.action == 'closed'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -31,6 +36,7 @@ jobs:
       issues: read
     outputs:
       allowed: ${{ steps.permission.outputs.allowed }}
+      decision: ${{ steps.permission.outputs.decision }}
     steps:
       - name: Verify label actor permission
         id: permission
@@ -38,15 +44,36 @@ jobs:
         with:
           script: |
             const sender = context.payload.sender;
+            const action = context.payload.action;
+            let decision = '';
+
+            if (action === 'labeled') {
+              decision = context.payload.label && context.payload.label.name;
+            } else if (action === 'closed') {
+              // GitHub UI：Close as completed = 通过，Close as not planned = 不通过。
+              decision =
+                context.payload.issue.state_reason === 'completed'
+                  ? 'resolved'
+                  : 'wontfix';
+            }
+
+            core.setOutput('decision', decision || '');
+            core.setOutput('allowed', 'false');
+
             if (!sender || !sender.login) {
-              core.setFailed('无法识别打标签的操作者');
+              core.warning('无法识别触发者，跳过。');
               return;
             }
+            if (decision !== 'resolved' && decision !== 'wontfix') {
+              core.warning(`未知的触发方式：${action}/${decision}，跳过。`);
+              return;
+            }
+
             const labels = (context.payload.issue.labels || []).map((label) =>
               typeof label === 'string' ? label : label.name
             );
             if (!labels.includes('report')) {
-              core.setFailed('Issue 缺少 report 标签，拒绝自动处理。请先确认这是上报 Issue。');
+              core.warning('Issue 缺少 report 标签，跳过自动处理。');
               return;
             }
             if (sender.type === 'Bot') {
@@ -62,21 +89,20 @@ jobs:
               const allowed = ['admin', 'maintain', 'write'].includes(data.permission);
               core.setOutput('allowed', String(allowed));
               if (!allowed) {
-                core.setFailed(
-                  `操作者 ${sender.login} 的仓库权限为 ${data.permission}，` +
-                  '只有 write / maintain / admin 可以触发自动黑名单变更。'
+                core.warning(
+                  `触发者 ${sender.login} 的仓库权限为 ${data.permission}，` +
+                  '只有 write / maintain / admin 可以触发自动黑名单变更，跳过。'
                 );
               }
             } catch (error) {
-              core.setOutput('allowed', 'false');
-              core.setFailed(`校验操作者权限失败：${error.message}`);
+              core.warning(`校验触发者权限失败：${error.message}，跳过。`);
             }
 
   resolve:
     needs: authorize
     if: >-
       needs.authorize.outputs.allowed == 'true' &&
-      github.event.label.name == 'resolved' &&
+      needs.authorize.outputs.decision == 'resolved' &&
       github.event.issue.pull_request == null
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -152,7 +178,7 @@ jobs:
                 ? '变更已通过校验并提交到 `main`，同时写入 `docs/blacklist-changelog.md`。'
                 : '未产生文件变更，因此没有提交。',
               '',
-              '本 Issue 由维护者标记 `resolved` 触发。'
+              '本 Issue 由维护者标记 `resolved` 或关闭为 `completed` 触发。'
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -202,7 +228,7 @@ jobs:
     needs: authorize
     if: >-
       needs.authorize.outputs.allowed == 'true' &&
-      github.event.label.name == 'wontfix' &&
+      needs.authorize.outputs.decision == 'wontfix' &&
       github.event.issue.pull_request == null
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -214,7 +240,7 @@ jobs:
             const body = [
               '### 未加入黑名单',
               '',
-              '维护者已将本 Issue 标记为 `wontfix`，因此：',
+              '维护者已将本 Issue 标记为 `wontfix`，或关闭为 `not planned`，因此：',
               '',
               '- `blacklist.json` 不会发生任何变更；',
               '- 本 Issue 关闭，流程结束；',

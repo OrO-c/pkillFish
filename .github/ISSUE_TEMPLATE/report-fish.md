@@ -10,7 +10,7 @@ assignees: ''
 提交前请确认：
 1. 这是公开评论区里的一条评论，不要提交私信、主页隐私或其他个人信息；
 2. 不要在这里粘贴任何账号凭据、Cookie、API Key；
-3. 维护者会审核证据，打 resolved 才会进入黑名单，打 wontfix 则不会变更名单。
+3. 维护者会审核证据；打 resolved 或关闭为 completed 才会进入黑名单，打 wontfix 或关闭为 not planned 则不会变更名单。
 -->
 
 <!-- pkillfish:meta
@@ -22,7 +22,7 @@ type:
 link:
 -->
 
-> 提交后不会自动加入黑名单。维护者审核后打 `resolved` 才会加入；打 `wontfix` 表示不加入。
+> 提交后不会自动加入黑名单。维护者审核后打 `resolved` 或关闭为 `completed` 才会加入；打 `wontfix` 或关闭为 `not planned` 表示不加入。
 
 ### 可疑评论
 

@@ -258,7 +258,10 @@ pf:v1:blacklist-meta
 3. 用 `GM_openInTab` 打开新标签页；不可用时退回 `window.open`；
 4. 由用户在 GitHub 页面确认内容、附截图、点击提交。
 
-提交 Issue 本身不会自动加入黑名单。只有维护者审核后打上 `resolved`，workflow 才会写入；打上 `wontfix` 则只回复并关闭，不改名单。
+提交 Issue 本身不会自动加入黑名单。维护者审核后：
+
+- 打上 `resolved`，或把 Issue 关闭为 **completed**：workflow 才写入黑名单；
+- 打上 `wontfix`，或把 Issue 关闭为 **not planned**：只回复并关闭，不改名单。
 
 Issue 会预填：
 
@@ -280,7 +283,7 @@ GitHub 的 Issue 新建页通过 URL 接收正文，而 URL 有长度限制。�
 
 ## GitHub 自动化流程
 
-`resolved` / `wontfix` 标签控制整个流程：
+`resolved` / `wontfix` 标签，或 Issue 的关闭原因，控制整个流程：
 
 ```text
 Issue 创建（report 标签）
@@ -288,7 +291,7 @@ Issue 创建（report 标签）
         v
 维护者审核
         |
-        +-- 打 resolved
+        +-- 打 resolved / Close as completed
         |      |
         |      v
         |   校验打标签者权限（write / maintain / admin）
@@ -311,7 +314,7 @@ Issue 创建（report 标签）
         |      v
         |   回复结果 -> 关闭 Issue
         |
-        +-- 打 wontfix
+        +-- 打 wontfix / Close as not planned
                |
                v
             不修改黑名单 -> 回复说明 -> 关闭 Issue
@@ -319,7 +322,7 @@ Issue 创建（report 标签）
 
 ### 防脏数据与防刷
 
-- 只有对仓库有 `write` / `maintain` / `admin` 权限的操作者打的标签会触发流程；`triage` 权限不够。
+- 只有对仓库有 `write` / `maintain` / `admin` 权限的操作者打标签或关闭 Issue 才会触发流程；`triage` 权限不够。
 - Issue 必须带有 `report` 标签（上报模板会自动添加），避免把普通讨论误送进自动化。
 - Issue 正文通过环境变量传入 Node 脚本，不拼接进 shell 命令。
 - 严格解析隐藏的 meta 区块，UID 必须是 1-19 位非零数字。
@@ -328,6 +331,8 @@ Issue 创建（report 标签）
 - 写入前重新校验整份 `blacklist.json`：重复 UID、非法字段、`revoked` 冲突、超大文件都会失败。
 - `revoked` 中的 UID 不会被自动重新加入，必须人工处理。
 - 单次流程只处理一个 Issue；并发用 `concurrency` 串行化，推送前 `pull --rebase`。
+- Issue 创建时模板会自动加 `report` 标签，这也会触发一次 `labeled` workflow，但 `authorize` 会把它跳过。这个 skipped run 是正常的，不代表流程失败。
+- 关闭 Issue 时：`completed` 视为通过，`not planned` 视为不通过；如果关闭人没有 write/maintain/admin 权限，会自动跳过。
 - 失败时不提交、不关闭 Issue，并回复失败原因。
 
 ### 启用步骤
