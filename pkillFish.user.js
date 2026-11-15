@@ -2,7 +2,7 @@
 // @name         pkillFish
 // @name:zh-CN   pkillFish - B站大肥鱼评论净化
 // @namespace    https://github.com/OrO-c/pkillFish
-// @version      1.5.4
+// @version      1.5.5
 // @description  静默隐藏 B 站评论区中的 DSH / 大肥鱼 Agent 灌水评论。仅本地 DOM 处理，不调用 B 站 API，不自动举报。
 // @description:en Hide suspected DSH / AI agent comments on Bilibili locally. No Bilibili API, no auto-reporting.
 // @author       pkillFish contributors
@@ -60,7 +60,7 @@
    * 常量
    * ========================================================================== */
 
-  const VERSION = '1.5.4';
+  const VERSION = '1.5.5';
 
   // 发布前请把这里改成你自己的 GitHub 仓库（owner/repo），并同步 README。
   const DEFAULT_REPORT_REPO = 'OrO-c/pkillFish';
@@ -111,6 +111,7 @@
     mlModelUrl: '',
     offline: false,
     reportEnabled: true,
+    privilegedReport: false,
     debug: false,
     reportRepo: DEFAULT_REPORT_REPO,
     blacklistUrl: '',
@@ -809,6 +810,7 @@
       'mlOnlyBadge',
       'offline',
       'reportEnabled',
+      'privilegedReport',
       'debug',
       'enableLocalModel'
     ];
@@ -4275,6 +4277,28 @@
       text-decoration: line-through;
     }
     .pf-chunks-note { padding: 0 9px 8px; }
+    .pf-json {
+      position: fixed; left: 50%; top: 8vh; transform: translateX(-50%);
+      z-index: 2147483646; width: 560px; max-width: calc(100vw - 28px);
+      max-height: 84vh; background: #fff; color: #1a1a1a;
+      border: 1px solid #b8b8b8; border-radius: 2px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+      font: 12px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
+        "Microsoft YaHei", sans-serif; text-align: left; display: flex; flex-direction: column;
+    }
+    .pf-json-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border-bottom: 1px solid #e3e3e3; font-weight: 600;
+    }
+    .pf-json-head .pf-linkbtn { margin-left: auto; font-weight: 400; }
+    .pf-json textarea {
+      width: 100%; min-height: 300px; flex: 1; resize: vertical;
+      margin: 8px 0 0; border: 1px solid #cfcfcf; padding: 6px;
+      font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #111; background: #fff; box-sizing: border-box;
+    }
+    .pf-json-body { padding: 0 9px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+    .pf-json-actions { display: flex; gap: 8px; align-items: center; padding: 7px 9px 8px; }
     .pf-foot {
       padding: 6px 10px; border-top: 1px solid #eee;
       color: #777; font-size: 11px;
@@ -4333,6 +4357,7 @@
           <label class="pf-check"><input type="checkbox" id="pf-keyword-block"> 启用独立关键词屏蔽（keywords.json）</label>
           <label class="pf-check"><input type="checkbox" id="pf-offline"> 离线模式（不拉取远端黑名单）</label>
           <label class="pf-check"><input type="checkbox" id="pf-report"> 显示“上报可疑鱼”按钮</label>
+          <label class="pf-check"><input type="checkbox" id="pf-privileged-report"> 具有合并权限的报告（强制刷新并复制 JSON）</label>
           <label class="pf-check"><input type="checkbox" id="pf-debug"> 调试日志（仅输出到控制台）</label>
           <label class="pf-check"><input type="checkbox" id="pf-model"> 启用本地轻量模型钩子</label>
 
@@ -4456,6 +4481,21 @@
         点击每个分片打开对应的 GitHub Issue；已打开的分片会加删除线。全部分片提交后，再清空待上报列表。
       </div>
     </section>
+
+    <section id="pf-json" class="pf-json" hidden aria-label="合并权限 JSON">
+      <div class="pf-json-head">
+        <span>最新 blacklist.json</span>
+        <button id="pf-json-close" class="pf-linkbtn" type="button">关闭</button>
+      </div>
+      <div class="pf-json-body">
+        <div id="pf-json-note" class="pf-note"></div>
+        <textarea id="pf-json-text" readonly spellcheck="false"></textarea>
+      </div>
+      <div class="pf-json-actions">
+        <button id="pf-json-copy" class="pf-btn" type="button">复制 JSON</button>
+        <span class="pf-note">已强制拉取最新文件；确认后人工替换 blacklist.json。</span>
+      </div>
+    </section>
   `;
 
   function q(selector) {
@@ -4513,6 +4553,7 @@
       keywordBlock: shadow.querySelector('#pf-keyword-block'),
       offline: shadow.querySelector('#pf-offline'),
       report: shadow.querySelector('#pf-report'),
+      privilegedReport: shadow.querySelector('#pf-privileged-report'),
       debug: shadow.querySelector('#pf-debug'),
       model: shadow.querySelector('#pf-model'),
       mlEnabled: shadow.querySelector('#pf-ml-enabled'),
@@ -4551,7 +4592,12 @@
       chunksCount: shadow.querySelector('#pf-chunks-count'),
       chunksList: shadow.querySelector('#pf-chunks-list'),
       chunksClose: shadow.querySelector('#pf-chunks-close'),
-      chunksNote: shadow.querySelector('#pf-chunks-note')
+      chunksNote: shadow.querySelector('#pf-chunks-note'),
+      jsonPanel: shadow.querySelector('#pf-json'),
+      jsonNote: shadow.querySelector('#pf-json-note'),
+      jsonText: shadow.querySelector('#pf-json-text'),
+      jsonCopy: shadow.querySelector('#pf-json-copy'),
+      jsonClose: shadow.querySelector('#pf-json-close')
     };
 
     bindUI();
@@ -4676,12 +4722,26 @@
       hideChunkPanel();
     });
 
+    ui.jsonClose.addEventListener('click', function () {
+      hidePrivilegedJson();
+    });
+
+    ui.jsonCopy.addEventListener('click', async function () {
+      if (!ui.jsonText.value) return;
+      const ok = await copyTextToClipboard(ui.jsonText.value);
+      setQueueNotice(
+        ok ? '已复制最新 blacklist.json。' : '复制失败，请手动全选文本框内容。',
+        !ok
+      );
+    });
+
     ui.queueClear.addEventListener('click', function () {
       if (!state.reportQueue.length) return;
       if (!window.confirm('清空待上报列表？已经提交到 GitHub 的内容不受影响。')) return;
       state.reportQueue = [];
       saveState(true);
       hideChunkPanel();
+      hidePrivilegedJson();
       renderReportQueue();
     });
 
@@ -4856,6 +4916,7 @@
     ui.keywordBlock.checked = !!settings.keywordBlockEnabled;
     ui.offline.checked = !!settings.offline;
     ui.report.checked = !!settings.reportEnabled;
+    ui.privilegedReport.checked = !!settings.privilegedReport;
     ui.debug.checked = !!settings.debug;
     ui.model.checked = !!settings.enableLocalModel;
     ui.mlEnabled.checked = !!settings.mlEnabled;
@@ -4911,6 +4972,7 @@
     settings.keywordBlockEnabled = !!ui.keywordBlock.checked;
     settings.offline = !!ui.offline.checked;
     settings.reportEnabled = !!ui.report.checked;
+    settings.privilegedReport = !!ui.privilegedReport.checked;
     settings.debug = !!ui.debug.checked;
     settings.enableLocalModel = !!ui.model.checked;
     settings.mlEnabled = !!ui.mlEnabled.checked;
@@ -5113,6 +5175,7 @@
 
     if (!state.reportQueue.length) {
       hideChunkPanel();
+      hidePrivilegedJson();
       updateQueueControls();
       return;
     }
@@ -5386,6 +5449,143 @@
     }
   }
 
+  function hidePrivilegedJson() {
+    if (!ui || !ui.jsonPanel) return;
+    ui.jsonPanel.hidden = true;
+    if (ui.jsonText) ui.jsonText.value = '';
+  }
+
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '1');
+      area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      return !!ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildPrivilegedBlacklist(selected) {
+    let doc;
+    try {
+      doc = JSON.parse(JSON.stringify(blacklistDoc));
+    } catch (_) {
+      return { error: '当前黑名单缓存无法序列化。' };
+    }
+    if (!doc || !Array.isArray(doc.entries)) {
+      return { error: '当前黑名单结构无效，拒绝生成 JSON。' };
+    }
+
+    const revoked = new Set(Array.isArray(doc.revoked) ? doc.revoked : []);
+    const existing = new Set(doc.entries.map(function (entry) { return entry.mid; }));
+    const seen = new Set();
+    const added = [];
+    let skippedRevoked = 0;
+    let skippedInvalid = 0;
+
+    for (let i = 0; i < selected.length; i += 1) {
+      const mid = digitsOnly(selected[i].mid);
+      if (!MID_RE.test(mid) || seen.has(mid)) {
+        skippedInvalid += 1;
+        continue;
+      }
+      seen.add(mid);
+      if (revoked.has(mid)) {
+        skippedRevoked += 1;
+        continue;
+      }
+      if (existing.has(mid)) continue;
+      existing.add(mid);
+      added.push({
+        mid: mid,
+        addedAt: new Date().toISOString(),
+        reports: []
+      });
+    }
+
+    if (added.length) {
+      doc.entries = doc.entries.concat(added);
+      doc.entries.sort(function (a, b) {
+        if (a.mid.length !== b.mid.length) return a.mid.length - b.mid.length;
+        return compareMid(a.mid, b.mid);
+      });
+      doc.version = Math.max(1, Number(doc.version) + 1);
+      doc.updatedAt = new Date().toISOString();
+    }
+
+    return {
+      json: JSON.stringify(doc, null, 2) + '\n',
+      added: added.length,
+      existing: selected.length - added.length - skippedRevoked - skippedInvalid,
+      revoked: skippedRevoked,
+      invalid: skippedInvalid,
+      version: doc.version
+    };
+  }
+
+  async function runPrivilegedReport(selected) {
+    if (settings.offline) {
+      setQueueNotice('离线模式不能强制拉取最新 JSON。', true);
+      return;
+    }
+    if (blacklistMeta.updating) {
+      setQueueNotice('黑名单正在更新，请稍后重试。', true);
+      return;
+    }
+
+    setQueueNotice('正在强制拉取最新 blacklist.json…');
+    if (ui && ui.queueSubmit) ui.queueSubmit.disabled = true;
+    await updateBlacklist(true);
+    if (ui && ui.queueSubmit) ui.queueSubmit.disabled = false;
+
+    if (blacklistMeta.error) {
+      setQueueNotice('强制拉取失败：' + blacklistMeta.error, true);
+      return;
+    }
+
+    const result = buildPrivilegedBlacklist(selected);
+    if (result.error) {
+      setQueueNotice(result.error, true);
+      return;
+    }
+
+    if (!ui || !ui.jsonPanel) return;
+    ui.jsonText.value = result.json;
+    ui.jsonNote.textContent =
+      '已强制拉取最新 blacklist.json；新增 ' +
+      result.added +
+      ' 条，已存在 ' +
+      result.existing +
+      ' 条' +
+      (result.revoked ? '，revoked 跳过 ' + result.revoked + ' 条' : '') +
+      (result.invalid ? '，无效跳过 ' + result.invalid + ' 条' : '') +
+      '；版本 ' +
+      result.version +
+      '。请人工替换 blacklist.json。';
+    ui.jsonPanel.hidden = false;
+
+    const copied = await copyTextToClipboard(result.json);
+    setQueueNotice(
+      copied
+        ? '已生成并复制最新 blacklist.json；请人工替换文件。'
+        : '已生成最新 blacklist.json，但自动复制失败；请在面板中手动复制。'
+    );
+  }
+
   function buildReportChunks(items) {
     const whole = buildBatchIssueUrl(items);
     if (whole.url) {
@@ -5434,7 +5634,7 @@
     return { chunks: chunks };
   }
 
-  function submitSelectedReports() {
+  async function submitSelectedReports() {
     if (!state) return;
     const selected = state.reportQueue.filter(function (item) {
       return item.selected !== false;
@@ -5445,6 +5645,11 @@
     }
     if (selected.length > MAX_BATCH_REPORTS) {
       setQueueNotice('一次最多提交 ' + MAX_BATCH_REPORTS + ' 条，请减少勾选。', true);
+      return;
+    }
+
+    if (settings.privilegedReport) {
+      await runPrivilegedReport(selected);
       return;
     }
 
@@ -5591,6 +5796,7 @@
 
   function resetPageState() {
     hideChunkPanel();
+    hidePrivilegedJson();
     if (mlModel) unloadMlModel(true);
     if (fishFilterActive) {
       fishFilterActive = false;
